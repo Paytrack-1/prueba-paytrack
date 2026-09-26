@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PayTrack - Conciliación de Pagos & Cashea</title>
+    <link rel="stylesheet" href="style.css">
+    
+    <!-- Librerías para Generación de QR y Conexión P2P en vivo Teléfono <-> PC -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+</head>
+<body>
+
+    <!-- NOTIFICACIONES EMERGENTES (TOASTS) -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- OVERLAY PARA CERRAR SIDEBAR EN MÓVIL -->
+    <div id="sidebar-overlay" class="sidebar-overlay hidden"></div>
+
+    <!-- INTERFAZ QUE VERÁ EL TELÉFONO AL ESCANEAR EL QR -->
+    <div id="mobile-upload-view" class="landing-wrapper hidden" style="text-align: center; padding: 40px 20px;">
+        <h2 style="margin-bottom: 10px;">📷 Cargar Comprobante</h2>
+        <p style="margin-bottom: 25px; color: var(--charcoal-slate);">Toma la foto o selecciónala de tu galería para enviarla a la computadora:</p>
+        
+        <input type="file" id="mobile-file-input" accept="image/*" capture="environment" style="display: none;">
+        <button type="button" class="btn-large btn-blue" onclick="document.getElementById('mobile-file-input').click()">📸 Tomar Foto / Buscar</button>
+
+        <div id="mobile-preview-box" class="hidden" style="margin-top: 25px;">
+            <img id="mobile-preview-img" src="" style="max-width: 100%; max-height: 250px; border-radius: 12px; border: 2px solid var(--steel-grey); object-fit: contain;">
+            <br><br>
+            <button type="button" id="mobile-send-btn" class="btn-large btn-cashea-yellow" style="width: 100%; max-width: 300px;">🚀 Enviar a la PC</button>
+        </div>
+    </div>
+
+    <!-- 1. LANDING PAGE -->
+    <div id="landing-container" class="landing-wrapper">
+        <header class="landing-header">
+            <img src="paytrack.png" alt="PayTrack Logo" class="brand-logo-img">
+            <div class="landing-nav-btns">
+                <button id="nav-login-btn" class="btn-outline">Iniciar Sesión</button>
+                <button id="nav-register-btn" class="btn-primary">Registrarse</button>
+            </div>
+        </header>
+
+        <section class="hero-section">
+            <div class="hero-content">
+                <h2>Control y Conciliación de Pagos en Tiempo Real</h2>
+                <p>La plataforma definitiva para conciliar transacciones de Pago Móvil, Punto de Venta, Efectivo y Gestión de Cuotas Cashea.</p>
+                <div class="hero-actions">
+                    <button id="hero-get-started" class="btn-large btn-primary">Comenzar Ahora</button>
+                    <a href="#features" class="btn-large btn-outline-light">Conocer Más</a>
+                </div>
+            </div>
+        </section>
+
+        <section class="stats-section">
+            <div class="stat-item">
+                <h3>100%</h3>
+                <p>Auditable y Seguro</p>
+            </div>
+            <div class="stat-item">
+                <h3>3+</h3>
+                <p>Métodos Directos</p>
+            </div>
+            <div class="stat-item">
+                <h3>Cashea</h3>
+                <p>Módulo de Cuotas</p>
+            </div>
+        </section>
+
+        <section id="features" class="features-section">
+            <div class="feature-card">
+                <div class="icon-box">💳</div>
+                <h3>Soporte Multi-Pago</h3>
+                <p>Registra ventas con Pago Móvil, Punto de Venta o Efectivo con referencias validadas.</p>
+            </div>
+            <div class="feature-card">
+                <div class="icon-box">💛</div>
+                <h3>Módulo Especial Cashea</h3>
+                <p>Controla compras a crédito por porcentaje de inicial, porcentaje de descuento y alertas de deudores.</p>
+            </div>
+            <div class="feature-card">
+                <div class="icon-box">📊</div>
+                <h3>Métricas & Analíticas</h3>
+                <p>Visualiza ganancias globales integradas con los ingresos reales de Cashea y reportes en tiempo real.</p>
+            </div>
+        </section>
+
+        <footer class="landing-footer">
+            <div class="footer-bottom">
+                <p>&copy; 2026 PayTrack. Todos los derechos reservados.</p>
+            </div>
+        </footer>
+    </div>
+
+    <!-- 2. LOGIN / REGISTRO -->
+    <div id="auth-container" class="auth-box hidden">
+        <button id="back-to-landing" class="btn-back">← Volver al Inicio</button>
+        <img src="paytrack.png" alt="PayTrack Logo" class="auth-logo-img">
+        
+        <form id="login-form">
+            <h3>Iniciar Sesión</h3>
+            <input type="text" id="login-user" placeholder="Usuario" required>
+            <input type="password" id="login-pass" placeholder="Contraseña" required>
+            <button type="submit" class="btn-primary">Ingresar</button>
+            <p style="margin-top: 10px; font-size: 0.9rem;">¿No tienes cuenta? <a href="#" id="show-register">Regístrate</a></p>
+        </form>
+
+        <form id="register-form" class="hidden">
+            <h3>Registro de Administrador</h3>
+            <input type="text" id="reg-user" placeholder="Nombre de Usuario" required>
+            <input type="password" id="reg-pass" placeholder="Contraseña" required>
+            <button type="submit" class="btn-primary">Registrar Cuenta</button>
+            <p style="margin-top: 10px; font-size: 0.9rem;">¿Ya tienes cuenta? <a href="#" id="show-login">Inicia Sesión</a></p>
+        </form>
+    </div>
+
+    <!-- 3. PANEL PRINCIPAL CON NAVEGACIÓN -->
+    <div id="app-container" class="app-layout hidden">
+        
+        <header class="mobile-topbar">
+            <button id="mobile-menu-toggle" class="btn-hamburger">☰</button>
+            <img src="paytrack.png" alt="PayTrack Logo" class="mobile-logo-img">
+        </header>
+
+        <aside id="app-sidebar" class="sidebar">
+            <div class="sidebar-brand">
+                <img src="paytrack.png" alt="PayTrack Logo" class="sidebar-logo-img">
+            </div>
+
+            <div class="sidebar-user">
+                <span id="user-display">Fabricio</span>
+            </div>
+
+            <nav class="sidebar-nav">
+                <a href="#" id="tab-history-btn" class="active">📊 Historial de Pagos</a>
+                <a href="#" id="tab-cashea-btn">💛 Módulo Cashea</a>
+                <a href="#" id="tab-summary-btn">📈 Métricas & Analíticas</a>
+            </nav>
+
+            <div class="sidebar-footer">
+                <button id="logout-btn" class="btn-danger btn-full">Cerrar Sesión</button>
+            </div>
+        </aside>
+
+        <main class="main-content">
+            <!-- PESTAÑA 1: HISTORIAL DE PAGOS -->
+            <section id="view-history" class="tab-view">
+                <div class="card">
+                    <div class="card-header-flex">
+                        <h2>Historial de Conciliaciones</h2>
+                        <div class="filter-group">
+                            <button id="export-excel-btn" class="btn-secondary">📥 Exportar Excel</button>
+                            <input type="text" id="search-input" placeholder="🔍 Buscar cliente, cédula, tlf, ref..." class="search-field">
+                            <select id="filter-status">
+                                <option value="TODOS">Todos los estados</option>
+                                <option value="Pagado">Pagado</option>
+                                <option value="En Proceso">En Proceso</option>
+                                <option value="No Registrado">No Registrado</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="table-responsive">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Fecha / Hora</th>
+                                    <th>Cliente</th>
+                                    <th>Cédula</th>
+                                    <th>Teléfono</th>
+                                    <th>Comprobante</th>
+                                    <th>Método</th>
+                                    <th>Monto</th>
+                                    <th>Referencia</th>
+                                    <th>Estado</th>
+                                    <th>Acciones</th>
+                                </tr>
+                            </thead>
+                            <tbody id="payment-table-body">
+                                <!-- Filas dinámicas -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- PESTAÑA 2: MÓDULO EXCLUSIVO CASHEA -->
+            <section id="view-cashea" class="tab-view hidden">
+                <!-- TARJETA ALERTA PAGO DE HOY Y BOTÓN DE DEUDORES -->
+                <div class="alert-card-cashea" id="cashea-today-alert">
+                    <div class="alert-icon">🔔</div>
+                    <div class="alert-info" style="flex-grow: 1;">
+                        <h3>Notificación de Cobros de Cashea</h3>
+                        <p id="cashea-today-text">Buscando compromisos de pago...</p>
+                    </div>
+                    <button id="open-unpaid-modal-btn" class="btn-cashea-yellow" style="white-space: nowrap;">📋 Ver Lista de Deudores</button>
+                </div>
+
+                <div class="card">
+                    <div class="card-header-flex">
+                        <h2>Gestión de Cuotas y Créditos Cashea 💛</h2>
+                        <button id="export-cashea-excel-btn" class="btn-secondary">📥 Exportar Cashea Excel</button>
+                    </div>
+
+                    <div class="table-responsive">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Cliente</th>
+                                    <th>Cédula / Teléfono</th>
+                                    <th>Precio Base ($)</th>
+                                    <th>Desc. (%)</th>
+                                    <th>Precio Final ($)</th>
+                                    <th>Inicial (%)</th>
+                                    <th>Abonado ($)</th>
+                                    <th>Restante ($)</th>
+                                    <th>Cuotas</th>
+                                    <th>Próx. Cobro</th>
+                                    <th>Estado</th>
+                                    <th>Acciones</th>
+                                </tr>
+                            </thead>
+                            <tbody id="cashea-table-body">
+                                <!-- Filas dinámicas de Cashea -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- PESTAÑA 3: MÉTRICAS Y GANANCIAS -->
+            <section id="view-summary" class="tab-view hidden">
+                <div class="card date-filter-card">
+                    <div class="card-header-flex">
+                        <h2>Filtrar Métricas por Día</h2>
+                        <div class="filter-group">
+                            <label for="stats-date-picker">Seleccionar Fecha:</label>
+                            <input type="date" id="stats-date-picker" class="search-field">
+                            <button id="reset-date-btn" class="btn-secondary">Ver Todo</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="kpi-grid">
+                    <div class="kpi-card">
+                        <h4>Ingreso Real en Caja</h4>
+                        <p id="kpi-total-amount">$0.00</p>
+                    </div>
+                    <div class="kpi-card">
+                        <h4>Recaudado Cashea 💛</h4>
+                        <p id="kpi-cashea-collected">$0.00</p>
+                    </div>
+                    <div class="kpi-card">
+                        <h4>Por Cobrar Cashea ⏳</h4>
+                        <p id="kpi-cashea-pending" style="color: var(--status-no-registrado);">$0.00</p>
+                    </div>
+                    <div class="kpi-card">
+                        <h4>Total Transacciones</h4>
+                        <p id="kpi-total-tx">0</p>
+                    </div>
+                    <div class="kpi-card kpi-highlight">
+                        <h4>🏆 Cliente Frecuente</h4>
+                        <p id="kpi-top-freq-client" class="kpi-text-value">Ninguno</p>
+                    </div>
+                    <div class="kpi-card kpi-highlight">
+                        <h4>💰 Mayor Comprador</h4>
+                        <p id="kpi-top-spent-client" class="kpi-text-value">Ninguno</p>
+                    </div>
+                </div>
+
+                <div class="charts-grid">
+                    <div class="card stats-card">
+                        <h2>Distribución por Método (%)</h2>
+                        <div class="stats-wrapper">
+                            <div class="chart-container">
+                                <svg viewBox="0 0 42 42" class="donut-chart" id="svg-donut">
+                                    <circle class="donut-hole" cx="21" cy="21" r="15.91549430918954" fill="#fff"></circle>
+                                    <circle class="donut-ring" cx="21" cy="21" r="15.91549430918954" fill="transparent" stroke="#e6e6e6" stroke-width="5"></circle>
+                                </svg>
+                            </div>
+                            <div class="chart-legend" id="chart-legend"></div>
+                        </div>
+                    </div>
+
+                    <div class="card stats-card">
+                        <h2>Volumen de Ventas ($)</h2>
+                        <div class="bar-chart-container" id="bar-chart-container"></div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- CONTENEDOR DE BOTONES FLOTANTES -->
+    <div class="floating-buttons-container hidden" id="floating-actions-bar">
+        <button id="open-cashea-modal-btn" class="btn-floating-item btn-cashea-yellow">+ Cashea</button>
+        <button id="open-payment-modal-btn" class="btn-floating-item btn-blue">+ Nuevo Pago</button>
+    </div>
+
+    <!-- MODAL REGISTRO DE PAGOS REGULARES (CON CONEXIÓN QR EN VIVO) -->
+    <div id="payment-modal" class="modal-overlay hidden">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h2>Registrar Nuevo Pago</h2>
+                <button type="button" id="close-modal-btn" class="close-btn">✕</button>
+            </div>
+
+            <form id="payment-form">
+                <div class="client-selection-box">
+                    <div class="form-group">
+                        <label>Cliente:</label>
+                        <input type="text" id="modal-client-input" placeholder="Escribe o selecciona un cliente..." required>
+                    </div>
+
+                    <div class="form-row-2col">
+                        <div class="form-group">
+                            <label>Cédula de Identidad:</label>
+                            <input type="text" id="modal-client-dni" placeholder="Ej: V-12345678" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Teléfono (Pago Móvil):</label>
+                            <input type="tel" id="modal-client-phone" placeholder="Ej: 04121234567" required>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="payment-rows-container">
+                    <div class="payment-row">
+                        <div class="form-group">
+                            <label>Método:</label>
+                            <select class="pay-method" required>
+                                <option value="Pago Móvil">Pago Móvil</option>
+                                <option value="Punto de Venta">Punto de Venta</option>
+                                <option value="Efectivo">Efectivo</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Estado:</label>
+                            <select class="pay-status" required>
+                                <option value="Pagado">Pagado</option>
+                                <option value="En Proceso">En Proceso</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Monto ($):</label>
+                            <input type="number" class="pay-amount" step="0.01" placeholder="0.00" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Referencia:</label>
+                            <input type="text" class="pay-ref" placeholder="Ej: Ref 123456" required>
+                        </div>
+                        
+                        <div class="form-group img-upload-group">
+                            <label>Comprobante de Pago:</label>
+                            <input type="file" class="pay-image-input" accept="image/*" onchange="previewImage(this)">
+                            
+                            <button type="button" class="btn-qr-trigger" onclick="generatePhoneQr()">📱 Vincular Teléfono por QR</button>
+                            
+                            <div id="qr-box-container" class="qr-scanner-box hidden">
+                                <p style="font-size:0.8rem; color:var(--charcoal-slate); margin-bottom:5px;">Escanea este QR con tu teléfono para enviar la foto:</p>
+                                <div id="qrcode-display" style="display:flex; justify-content:center; padding:10px;"></div>
+                                <small id="qr-status-text" style="color:var(--brand-blue); font-weight:bold;">Esperando conexión del móvil...</small>
+                            </div>
+
+                            <div class="img-preview-box hidden">
+                                <img src="" alt="Previsualización" class="img-preview">
+                                <button type="button" class="btn-remove-img" onclick="removeImage(this)">✕</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal-actions" style="margin-top:20px;">
+                    <button type="submit" class="btn-blue">Procesar Registro</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- MODAL NUEVA COMPRA CASHEA -->
+    <div id="cashea-modal" class="modal-overlay hidden">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h2>Registrar Compra Cashea 💛</h2>
+                <button type="button" id="close-cashea-modal-btn" class="close-btn">✕</button>
+            </div>
+
+            <form id="cashea-form">
+                <div class="form-group">
+                    <label>Cliente:</label>
+                    <input type="text" id="cashea-client" placeholder="Nombre completo" required>
+                </div>
+
+                <div class="form-row-2col">
+                    <div class="form-group">
+                        <label>Cédula:</label>
+                        <input type="text" id="cashea-dni" placeholder="Ej: V-12345678" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Teléfono:</label>
+                        <input type="tel" id="cashea-phone" placeholder="Ej: 04121234567" required>
+                    </div>
+                </div>
+
+                <div class="form-row-2col" style="margin-top:10px;">
+                    <div class="form-group">
+                        <label>Precio Total del Producto ($):</label>
+                        <input type="number" id="cashea-total-amount" step="0.01" placeholder="0.00" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Descuento Especial Aplicado (%):</label>
+                        <input type="number" id="cashea-discount-percent" step="0.01" min="0" max="100" value="0.00" placeholder="Ej: 10%">
+                    </div>
+                </div>
+
+                <div class="form-row-2col" style="margin-top:10px;">
+                    <div class="form-group">
+                        <label>Monto Inicial Abonado (%):</label>
+                        <input type="number" id="cashea-down-payment-percent" step="0.01" min="0" max="100" placeholder="Ej: 25%" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Total de Cuotas Financiadas:</label>
+                        <select id="cashea-total-installments">
+                            <option value="3">3 Cuotas (Estándar)</option>
+                            <option value="6">6 Cuotas</option>
+                            <option value="9">9 Cuotas</option>
+                            <option value="12">12 Cuotas</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-group" style="margin-top:10px;">
+                    <label>Fecha del Próximo Cobro/Abono:</label>
+                    <input type="date" id="cashea-next-date" required>
+                </div>
+
+                <div class="modal-actions" style="margin-top:20px; justify-content: flex-end; gap:10px;">
+                    <button type="button" id="cancel-cashea-btn" class="btn-secondary">Cancelar</button>
+                    <button type="submit" class="btn-blue">Registrar Cashea</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- MODAL LISTA DE CLIENTES QUE NO HAN PAGADO (DEUDORES) -->
+    <div id="unpaid-modal" class="modal-overlay hidden">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h2>📋 Clientes Deudores / Pendientes de Pago</h2>
+                <button type="button" id="close-unpaid-modal-btn" class="close-btn">✕</button>
+            </div>
+
+            <p style="color: var(--charcoal-slate); margin-bottom: 15px;">Listado general de clientes que poseen saldo pendiente por abonar y la fecha programada de cobro:</p>
+
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Cliente</th>
+                            <th>Cédula / Teléfono</th>
+                            <th>Descuento Recibido</th>
+                            <th>Monto Pendiente ($)</th>
+                            <th>Fecha Límite de Pago</th>
+                            <th>Estado</th>
+                        </tr>
+                    </thead>
+                    <tbody id="unpaid-table-body">
+                        <!-- Filas dinámicas de deudores -->
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="modal-actions" style="margin-top: 20px; justify-content: flex-end;">
+                <button type="button" id="close-unpaid-modal-footer-btn" class="btn-secondary">Cerrar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL EDITAR PAGO REGULAR -->
+    <div id="edit-payment-modal" class="modal-overlay hidden">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h2>Editar Pago</h2>
+                <button type="button" id="close-edit-modal-btn" class="close-btn">✕</button>
+            </div>
+
+            <form id="edit-payment-form">
+                <input type="hidden" id="edit-payment-id">
+                
+                <div class="form-group">
+                    <label>Cliente:</label>
+                    <input type="text" id="edit-client-input" required>
+                </div>
+
+                <div class="form-row-2col">
+                    <div class="form-group">
+                        <label>Cédula de Identidad:</label>
+                        <input type="text" id="edit-client-dni" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Teléfono:</label>
+                        <input type="tel" id="edit-client-phone" required>
+                    </div>
+                </div>
+
+                <div class="form-row-2col" style="margin-top: 10px;">
+                    <div class="form-group">
+                        <label>Método:</label>
+                        <select id="edit-pay-method" required>
+                            <option value="Pago Móvil">Pago Móvil</option>
+                            <option value="Punto de Venta">Punto de Venta</option>
+                            <option value="Efectivo">Efectivo</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Estado:</label>
+                        <select id="edit-pay-status" required>
+                            <option value="Pagado">Pagado</option>
+                            <option value="En Proceso">En Proceso</option>
+                            <option value="No Registrado">No Registrado</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-row-2col" style="margin-top: 10px;">
+                    <div class="form-group">
+                        <label>Monto ($):</label>
+                        <input type="number" id="edit-pay-amount" step="0.01" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Referencia:</label>
+                        <input type="text" id="edit-pay-ref" required>
+                    </div>
+                </div>
+
+                <div class="modal-actions" style="margin-top: 25px; justify-content: flex-end; gap: 10px;">
+                    <button type="button" id="cancel-edit-btn" class="btn-secondary">Cancelar</button>
+                    <button type="submit" class="btn-blue">Guardar Cambios</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- MODAL REGISTRAR ABONO EN CASHEA -->
+    <div id="cashea-abono-modal" class="modal-overlay hidden">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h2>Registrar Abono / Cuota Cashea</h2>
+                <button type="button" id="close-abono-modal-btn" class="close-btn">✕</button>
+            </div>
+
+            <form id="cashea-abono-form">
+                <input type="hidden" id="abono-cashea-id">
+                
+                <div class="form-group">
+                    <label>Cliente:</label>
+                    <input type="text" id="abono-client-name" readonly disabled>
+                </div>
+
+                <div class="form-row-2col" style="margin-top:10px;">
+                    <div class="form-group">
+                        <label>Monto a Abonar ($):</label>
+                        <input type="number" id="abono-amount" step="0.01" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Próxima Fecha de Pago:</label>
+                        <input type="date" id="abono-next-date" required>
+                    </div>
+                </div>
+
+                <div class="modal-actions" style="margin-top:20px; justify-content: flex-end; gap:10px;">
+                    <button type="button" id="cancel-abono-btn" class="btn-secondary">Cancelar</button>
+                    <button type="submit" class="btn-blue">Procesar Abono</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- MODAL PERSONALIZADO DE CONFIRMACIÓN DE ELIMINACIÓN -->
+    <div id="confirm-modal" class="modal-overlay hidden">
+        <div class="modal-card confirm-box">
+            <h3 id="confirm-title" style="margin-bottom: 10px;">Confirmar Acción</h3>
+            <p id="confirm-message" style="margin-bottom: 20px; color: var(--charcoal-slate);">¿Estás seguro de que deseas eliminar este registro?</p>
+            <div class="modal-actions" style="justify-content: flex-end; gap: 12px;">
+                <button id="confirm-cancel-btn" class="btn-secondary">Rechazar / Cancelar</button>
+                <button id="confirm-accept-btn" class="btn-danger">Aceptar y Eliminar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL VISUALIZADOR DE COMPROBANTES EN TAMAÑO REAL -->
+    <div id="image-viewer-modal" class="modal-overlay hidden">
+        <div class="viewer-card">
+            <button id="close-viewer-btn" class="close-btn">✕</button>
+            <img id="viewer-full-image" src="" alt="Comprobante Completo">
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
