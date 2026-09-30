@@ -32,11 +32,94 @@ window.addEventListener('DOMContentLoaded', () => {
         btn.addEventListener('click', toggleTheme);
     });
 
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('upload') === 'true') {
+        document.getElementById('landing-container').classList.add('hidden');
+        document.getElementById('auth-container').classList.add('hidden');
+        document.getElementById('app-container').classList.add('hidden');
+        document.getElementById('client-upload-page').classList.remove('hidden');
+        setupMobileUploadHandler();
+        return;
+    }
+
     setupDniAutocomplete('modal-client-dni', 'modal-client-input', 'modal-client-phone');
     setupDniAutocomplete('cashea-dni', 'cashea-client', 'cashea-phone');
     setupQrGeneratorControls();
     setupCasheaAutoCalculation();
+    setupFilters();
 });
+
+function setupFilters() {
+    const searchInput = document.getElementById('search-input');
+    const filterDateInput = document.getElementById('filter-date-input');
+    const clearFiltersBtn = document.getElementById('clear-filters-btn');
+
+    if (searchInput) searchInput.addEventListener('input', () => renderTable());
+    if (filterDateInput) filterDateInput.addEventListener('change', () => renderTable());
+    
+    if (clearFiltersBtn) {
+        clearFiltersBtn.addEventListener('click', () => {
+            if (searchInput) searchInput.value = '';
+            if (filterDateInput) filterDateInput.value = '';
+            renderTable();
+        });
+    }
+
+    const filterMetricsBtn = document.getElementById('filter-metrics-btn');
+    const resetMetricsBtn = document.getElementById('reset-metrics-btn');
+
+    if (filterMetricsBtn) filterMetricsBtn.addEventListener('click', () => renderMetrics());
+    if (resetMetricsBtn) {
+        resetMetricsBtn.addEventListener('click', () => {
+            document.getElementById('metrics-start-date').value = '';
+            document.getElementById('metrics-end-date').value = '';
+            renderMetrics();
+        });
+    }
+}
+
+function setupMobileUploadHandler() {
+    const mobileForm = document.getElementById('mobile-upload-form');
+    if (!mobileForm) return;
+
+    mobileForm.addEventListener('submit', function(e) {
+        e.preventDefault();
+        const client = document.getElementById('mobile-client-name').value;
+        const ref = document.getElementById('mobile-ref').value;
+        const amount = parseFloat(document.getElementById('mobile-amount').value);
+        const fileInput = document.getElementById('mobile-file');
+
+        if (fileInput.files && fileInput.files[0]) {
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                const base64Image = event.target.result;
+                let existingPayments = JSON.parse(localStorage.getItem('paytrack_payments')) || [];
+                
+                const now = new Date();
+                const formattedDateTime = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+
+                existingPayments.push({
+                    id: Date.now() + Math.random(),
+                    user: client,
+                    dni: 'N/A',
+                    phone: 'N/A',
+                    method: 'Pago Móvil',
+                    amount: amount,
+                    ref: ref,
+                    status: 'Proceso',
+                    datetime: formattedDateTime,
+                    image: base64Image
+                });
+
+                localStorage.setItem('paytrack_payments', JSON.stringify(existingPayments));
+
+                mobileForm.classList.add('hidden');
+                document.getElementById('client-success-msg').classList.remove('hidden');
+            };
+            reader.readAsDataURL(fileInput.files[0]);
+        }
+    });
+}
 
 function showToast(message, type = 'success') {
     const container = document.getElementById('toast-container');
@@ -73,7 +156,6 @@ function setupDniAutocomplete(dniInputId, nameInputId, phoneInputId) {
     });
 }
 
-// GENERADOR DE CÓDIGO QR PARA SUBIDA WEB REMOTA
 function setupQrGeneratorControls() {
     const generateQrBtn = document.getElementById('generate-qr-btn');
     const closeQrGenBtn = document.getElementById('close-qr-gen-btn');
@@ -82,22 +164,15 @@ function setupQrGeneratorControls() {
 
     if (generateQrBtn) {
         generateQrBtn.addEventListener('click', () => {
-            const refInput = document.querySelector('.payment-row .pay-ref').value;
-            const amountInput = document.querySelector('.payment-row .pay-amount').value;
-
-            if (!refInput || !amountInput) {
-                showToast('Ingresa la referencia y el monto antes de generar el QR', 'error');
-                return;
-            }
-
             if (qrContainer && qrElement) {
                 qrContainer.classList.remove('hidden');
                 qrElement.innerHTML = ''; 
 
-                const uploadUrl = `${window.location.origin}${window.location.pathname}?upload_ref=${encodeURIComponent(refInput)}&amt=${encodeURIComponent(amountInput)}`;
+                const cleanUrl = window.location.href.split('?')[0];
+                const uploadPageUrl = cleanUrl + '?upload=true';
                 
                 qrCodeInstance = new QRCode(qrElement, {
-                    text: uploadUrl,
+                    text: uploadPageUrl,
                     width: 170,
                     height: 170,
                     colorDark: "#000000",
@@ -105,7 +180,7 @@ function setupQrGeneratorControls() {
                     correctLevel: QRCode.CorrectLevel.H
                 });
 
-                showToast('QR generado para enlace móvil', 'success');
+                showToast('QR generado correctamente', 'success');
             }
         });
     }
@@ -117,7 +192,6 @@ function setupQrGeneratorControls() {
     }
 }
 
-// CÁLCULO Y AUTOCOMPLETADO DE CUOTAS CASHEA
 function setupCasheaAutoCalculation() {
     const totalAmountInput = document.getElementById('cashea-total-amount');
     const discountInput = document.getElementById('cashea-discount-percent');
@@ -472,6 +546,7 @@ if (casheaForm) {
         const totalAmount = parseFloat(document.getElementById('cashea-total-amount').value);
         const discountPercent = parseFloat(document.getElementById('cashea-discount-percent').value) || 0;
         const downPaymentPercent = parseFloat(document.getElementById('cashea-down-payment-percent').value) || 25.0;
+        const casheaMethod = document.getElementById('cashea-payment-method').value;
         const totalInstallments = parseInt(document.getElementById('cashea-total-installments').value);
         const nextDate = document.getElementById('cashea-next-date').value;
 
@@ -515,7 +590,7 @@ if (casheaForm) {
         payments.push({
             id: Date.now() + Math.random(),
             user, dni, phone,
-            method: 'Cashea (Inicial)',
+            method: casheaMethod,
             amount: clientDownPaymentAmount,
             ref: `Inicial Ord #${orderId}`,
             status: 'Pagado',
@@ -536,6 +611,7 @@ if (casheaAbonoForm) {
         e.preventDefault();
         const id = parseFloat(document.getElementById('abono-cashea-id').value);
         const amount = parseFloat(document.getElementById('abono-amount').value);
+        const abonoMethod = document.getElementById('abono-payment-method').value;
         const nextDate = document.getElementById('abono-next-date').value;
 
         const record = casheaRecords.find(c => c.id === id);
@@ -561,7 +637,7 @@ if (casheaAbonoForm) {
                 user: record.user,
                 dni: record.dni,
                 phone: record.phone,
-                method: 'Cashea (Cuota)',
+                method: abonoMethod,
                 amount: amount,
                 ref: `Cuota Ord #${record.orderId}`,
                 status: 'Pagado',
@@ -681,8 +757,28 @@ function renderTable() {
     const paymentTableBody = document.getElementById('payment-table-body');
     if (!paymentTableBody) return;
     paymentTableBody.innerHTML = '';
+
+    const searchQuery = document.getElementById('search-input') ? document.getElementById('search-input').value.trim().toLowerCase() : '';
+    const filterDate = document.getElementById('filter-date-input') ? document.getElementById('filter-date-input').value : '';
+
+    const filteredPayments = payments.filter(p => {
+        const matchesSearch = !searchQuery || 
+            (p.user && p.user.toLowerCase().includes(searchQuery)) ||
+            (p.dni && p.dni.toLowerCase().includes(searchQuery)) ||
+            (p.ref && p.ref.toLowerCase().includes(searchQuery));
+
+        const paymentDateOnly = p.datetime ? p.datetime.split(' ')[0] : '';
+        const matchesDate = !filterDate || paymentDateOnly === filterDate;
+
+        return matchesSearch && matchesDate;
+    });
+
+    if (filteredPayments.length === 0) {
+        paymentTableBody.innerHTML = `<tr><td colspan="10" style="text-align:center;">No se encontraron transacciones.</td></tr>`;
+        return;
+    }
     
-    payments.forEach(p => {
+    filteredPayments.forEach(p => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
             <td class="date-cell">${p.datetime || 'N/A'}</td>
@@ -741,18 +837,39 @@ function renderCasheaTable() {
 
 function renderMetrics() {
     const totalAmountElem = document.getElementById('kpi-total-amount');
+    const volumeElem = document.getElementById('kpi-volume');
     const casheaCommissionElem = document.getElementById('kpi-cashea-commission');
     const casheaInitCommissionElem = document.getElementById('kpi-cashea-init-commission');
     const casheaTransitElem = document.getElementById('kpi-cashea-transit');
     const casheaCollectedElem = document.getElementById('kpi-cashea-collected');
-    const totalTxElem = document.getElementById('kpi-total-tx');
+    
+    const startDate = document.getElementById('metrics-start-date') ? document.getElementById('metrics-start-date').value : '';
+    const endDate = document.getElementById('metrics-end-date') ? document.getElementById('metrics-end-date').value : '';
+
+    const filteredPayments = payments.filter(p => {
+        if (!p.datetime) return true;
+        const pDate = p.datetime.split(' ')[0];
+        if (startDate && pDate < startDate) return false;
+        if (endDate && pDate > endDate) return false;
+        return true;
+    });
 
     let totalCaja = 0;
+    let totalVolume = 0;
     let totalCasheaCommission7 = 0;
     let totalCasheaCommissionInit4 = 0;
 
-    payments.forEach(p => {
+    const payerTotals = {};
+    const buyerCounts = {};
+
+    filteredPayments.forEach(p => {
+        totalVolume += p.amount;
         if (p.status === 'Pagado') totalCaja += p.amount;
+
+        if (p.user) {
+            payerTotals[p.user] = (payerTotals[p.user] || 0) + p.amount;
+            buyerCounts[p.user] = (buyerCounts[p.user] || 0) + 1;
+        }
     });
 
     let transitTotal = 0;
@@ -773,33 +890,60 @@ function renderMetrics() {
         }
     });
 
+    // Calcular rankings
+    let topPayer = 'N/A';
+    let maxPaid = -1;
+    for (const [user, amount] of Object.entries(payerTotals)) {
+        if (amount > maxPaid) {
+            maxPaid = amount;
+            topPayer = `${user} ($${amount.toFixed(2)})`;
+        }
+    }
+
+    let topBuyer = 'N/A';
+    let maxCount = -1;
+    for (const [user, count] of Object.entries(buyerCounts)) {
+        if (count > maxCount) {
+            maxCount = count;
+            topBuyer = `${user} (${count} compras)`;
+        }
+    }
+
     if (totalAmountElem) totalAmountElem.textContent = `$${totalCaja.toFixed(2)}`;
+    if (volumeElem) volumeElem.textContent = `$${totalVolume.toFixed(2)}`;
     if (casheaCommissionElem) casheaCommissionElem.textContent = `$${totalCasheaCommission7.toFixed(2)}`;
     if (casheaInitCommissionElem) casheaInitCommissionElem.textContent = `$${totalCasheaCommissionInit4.toFixed(2)}`;
     if (casheaTransitElem) casheaTransitElem.textContent = `$${transitTotal.toFixed(2)}`;
     if (casheaCollectedElem) casheaCollectedElem.textContent = `$${collectedCashea.toFixed(2)}`;
-    if (totalTxElem) totalTxElem.textContent = payments.length + casheaRecords.length;
 
-    renderCharts();
+    document.getElementById('top-payer-container').textContent = topPayer;
+    document.getElementById('top-buyer-container').textContent = topBuyer;
+
+    renderCharts(filteredPayments);
 }
 
-function renderCharts() {
+function renderCharts(activePayments) {
     const ctxMethods = document.getElementById('paymentMethodsChart');
     if (ctxMethods) {
         if (chartsInstance.methods) chartsInstance.methods.destroy();
 
-        let pmCount = payments.filter(p => p.method.includes('Pago Móvil')).length;
-        let pvCount = payments.filter(p => p.method.includes('Punto')).length;
-        let efCount = payments.filter(p => p.method.includes('Efectivo')).length;
-        let csCount = payments.filter(p => p.method.includes('Cashea')).length;
+        let pmCount = activePayments.filter(p => p.method === 'Pago Móvil').length;
+        let pvCount = activePayments.filter(p => p.method === 'Punto de Venta').length;
+        let zelleCount = activePayments.filter(p => p.method === 'Zelle').length;
+        let efCount = activePayments.filter(p => p.method === 'Efectivo').length;
+        
+        let casheaPm = activePayments.filter(p => p.method === 'Cashea/Pago Móvil').length;
+        let casheaPv = activePayments.filter(p => p.method === 'Cashea/Punto de Venta').length;
+        let casheaZelle = activePayments.filter(p => p.method === 'Cashea/Zelle').length;
+        let casheaEf = activePayments.filter(p => p.method === 'Cashea/Efectivo').length;
 
         chartsInstance.methods = new Chart(ctxMethods, {
             type: 'pie',
             data: {
-                labels: ['Pago Móvil', 'Punto de Venta', 'Efectivo', 'Cashea'],
+                labels: ['Pago Móvil', 'Punto de Venta', 'Zelle', 'Efectivo', 'Cashea/P.Móvil', 'Cashea/P.Venta', 'Cashea/Zelle', 'Cashea/Efectivo'],
                 datasets: [{
-                    data: [pmCount, pvCount, efCount, csCount],
-                    backgroundColor: ['#6366f1', '#3b82f6', '#10b981', '#f59e0b']
+                    data: [pmCount, pvCount, zelleCount, efCount, casheaPm, casheaPv, casheaZelle, casheaEf],
+                    backgroundColor: ['#6366f1', '#3b82f6', '#06b6d4', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#64748b']
                 }]
             },
             options: {
