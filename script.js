@@ -84,9 +84,6 @@ function setupMobileUploadHandler() {
 
     mobileForm.addEventListener('submit', function(e) {
         e.preventDefault();
-        const client = document.getElementById('mobile-client-name').value;
-        const ref = document.getElementById('mobile-ref').value;
-        const amount = parseFloat(document.getElementById('mobile-amount').value);
         const fileInput = document.getElementById('mobile-file');
 
         if (fileInput.files && fileInput.files[0]) {
@@ -100,12 +97,12 @@ function setupMobileUploadHandler() {
 
                 existingPayments.push({
                     id: Date.now() + Math.random(),
-                    user: client,
+                    user: 'Cliente (Vía QR)',
                     dni: 'N/A',
                     phone: 'N/A',
                     method: 'Pago Móvil',
-                    amount: amount,
-                    ref: ref,
+                    amount: 0.00,
+                    ref: 'QR Móvil',
                     status: 'Proceso',
                     datetime: formattedDateTime,
                     image: base64Image
@@ -890,7 +887,6 @@ function renderMetrics() {
         }
     });
 
-    // Calcular rankings
     let topPayer = 'N/A';
     let maxPaid = -1;
     for (const [user, amount] of Object.entries(payerTotals)) {

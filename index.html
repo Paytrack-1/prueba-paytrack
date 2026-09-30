@@ -15,30 +15,18 @@
 
     <div id="toast-container"></div>
 
-    <!-- VISTA MÓVIL PARA CLIENTES (?upload=true) -->
+    <!-- VISTA MÓVIL SIMPLIFICADA PARA CLIENTES (?upload=true) -->
     <div id="client-upload-page" class="hidden" style="display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px;">
         <div class="card" style="width: 100%; max-width: 400px; text-align: center;">
             <h2 style="margin-bottom: 10px;">Subir Comprobante</h2>
-            <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 20px;">Envía la foto de tu pago para registrarla automáticamente.</p>
+            <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 20px;">Toma o selecciona la foto de tu comprobante de pago.</p>
             
             <form id="mobile-upload-form">
-                <div class="form-group" style="text-align: left;">
-                    <label>Tus Nombres / Cédula</label>
-                    <input type="text" id="mobile-client-name" required placeholder="Ej: Juan Pérez V-12345678">
-                </div>
-                <div class="form-group" style="text-align: left;">
-                    <label>Número de Referencia</label>
-                    <input type="text" id="mobile-ref" required placeholder="Últimos dígitos o referencia">
-                </div>
-                <div class="form-group" style="text-align: left;">
-                    <label>Monto Pagado ($)</label>
-                    <input type="number" step="0.01" id="mobile-amount" required placeholder="0.00">
-                </div>
-                <div class="form-group" style="text-align: left;">
+                <div class="form-group" style="text-align: left; margin-bottom: 20px;">
                     <label>Foto del Comprobante</label>
-                    <input type="file" id="mobile-file" accept="image/*" capture="environment" required>
+                    <input type="file" id="mobile-file" accept="image/*" capture="environment" required style="padding: 15px; background: var(--bg-main); border: 2px dashed var(--primary); border-radius: 8px; cursor: pointer; width: 100%;">
                 </div>
-                <button type="submit" class="btn btn-primary btn-block" style="margin-top: 15px;">Enviar Comprobante 🚀</button>
+                <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Enviar Comprobante 🚀</button>
             </form>
 
             <div id="client-success-msg" class="hidden" style="margin-top: 20px; color: var(--success); font-weight: bold;">
@@ -174,7 +162,7 @@
             </header>
 
             <div class="content-body">
-                <!-- VISTA HISTORIAL CON BUSCADOR Y FILTROS -->
+                <!-- VISTA HISTORIAL -->
                 <section id="view-history" class="dashboard-view">
                     <div class="section-header">
                         <div>
@@ -283,13 +271,12 @@
                     </div>
                 </section>
 
-                <!-- VISTA MÉTRICAS CON FILTRO DE FECHA Y RANKINGS -->
+                <!-- VISTA MÉTRICAS -->
                 <section id="view-summary" class="dashboard-view hidden">
                     <div class="section-header">
                         <div><h3>Métricas y Estadísticas Financieras</h3><p>Análisis de caja, volumen de ventas y mejores clientes.</p></div>
                     </div>
 
-                    <!-- FILTRO DE FECHAS PARA MÉTRICAS -->
                     <div class="card" style="margin-bottom: 20px;">
                         <div style="display: flex; gap: 15px; align-items: flex-end; flex-wrap: wrap;">
                             <div class="form-group" style="flex: 1; min-width: 200px; margin-bottom: 0;">
@@ -314,7 +301,6 @@
                         <div class="metric-card card"><span class="metric-icon">✅</span><div><span class="metric-label">Cashea Recaudado</span><h3 id="kpi-cashea-collected">$0.00</h3></div></div>
                     </div>
 
-                    <!-- RANKINGS DE CLIENTES -->
                     <div style="margin-top: 30px; display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px;">
                         <div class="card">
                             <h4 style="margin-bottom: 15px;">🏆 Cliente que más dinero ha aportado</h4>
@@ -342,7 +328,7 @@
         <button id="float-unpaid-btn" class="floating-btn btn-outline-warning hidden" title="Ver Deudores"><span>⚠</span> Deudores</button>
     </div>
 
-    <!-- MODAL NUEVO / EDITAR PAGO (Zelle añadido y Cashea excluido de pagos normales) -->
+    <!-- MODAL NUEVO / EDITAR PAGO -->
     <div id="payment-modal" class="modal hidden">
         <div class="modal-content card">
             <div class="modal-header">
@@ -383,7 +369,7 @@
 
                     <div id="qr-code-generator-container" class="hidden" style="margin-top: 10px; text-align: center; background: rgba(255,255,255,0.05); padding: 15px; border-radius: 8px;">
                         <div id="qrcode" style="display: inline-block; padding: 10px; background: #fff; border-radius: 6px;"></div>
-                        <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 8px;">Escanea este código con el celular para abrir la ventana de subida</p>
+                        <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 8px;">Escanea este código con el celular para enviar tu comprobante</p>
                         <button type="button" id="close-qr-gen-btn" class="btn btn-outline-danger" style="margin-top: 8px; font-size: 0.75rem;">Cerrar QR</button>
                     </div>
                 </div>
@@ -393,7 +379,7 @@
         </div>
     </div>
 
-    <!-- MODAL CASHEA (Métodos Actualizados con Formato Cashea/...) -->
+    <!-- MODAL CASHEA -->
     <div id="cashea-modal" class="modal hidden">
         <div class="modal-content card">
             <div class="modal-header"><h3>Nueva Orden Cashea (Cálculo Automático de Cuotas)</h3><button id="close-cashea-modal-btn" class="close-btn">&times;</button></div>
@@ -424,7 +410,7 @@
         </div>
     </div>
 
-    <!-- MODAL ABONO (Métodos Actualizados con Cashea/...) -->
+    <!-- MODAL ABONO -->
     <div id="cashea-abono-modal" class="modal hidden">
         <div class="modal-content card" style="max-width: 450px;">
             <div class="modal-header"><h3>Registrar Cuota / Abono Cashea</h3><button id="close-abono-modal-btn" class="close-btn">&times;</button></div>
