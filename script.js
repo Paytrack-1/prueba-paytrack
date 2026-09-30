@@ -1,43 +1,42 @@
-// LOCALSTORAGE - REGISTROS DE USUARIO Y PAGOS
-let users = JSON.parse(localStorage.getItem('app_users')) || [
+let users = JSON.parse(localStorage.getItem('paytrack_users')) || [
     { user: 'admin', pass: '1234', role: 'admin' }
 ];
 
-// Pagos Regulares (Sin Cashea)
-let payments = JSON.parse(localStorage.getItem('app_payments')) || [
-    { id: 1, user: 'Fabricio Santos', dni: 'V-32398546', phone: '04226466851', method: 'Pago Móvil', amount: 120.00, ref: '987654', status: 'Pagado', datetime: '2026-09-23 14:30', image: '' },
-    { id: 2, user: 'Empresa Alpha C.A.', dni: 'J-87654321', phone: '04147654321', method: 'Punto de Venta', amount: 80.00, ref: '112233', status: 'Pagado', datetime: '2026-09-22 09:20', image: '' }
-];
-
-// Módulo Cashea con Cálculos en Porcentajes
-let casheaRecords = JSON.parse(localStorage.getItem('app_cashea_records')) || [
-    {
-        id: 101,
-        user: 'Fabricio Santos',
-        dni: 'V-32398546',
-        phone: '04226466851',
-        totalAmount: 200.00,        // Precio base del producto
-        discountPercent: 10.00,     // Descuento en %
-        downPaymentPercent: 25.00,  // Monto inicial en %
-        paidAmount: 45.00,          // Inicial abonada en $(200 - 10\% = 180 * 25\% = 45$)
-        totalInstallments: 3,
-        paidInstallments: 0,
-        nextDate: new Date().toISOString().slice(0, 10), // Hoy
-        status: 'En Proceso'
-    }
-];
+let payments = JSON.parse(localStorage.getItem('paytrack_payments')) || [];
+let casheaRecords = JSON.parse(localStorage.getItem('paytrack_cashea_records')) || [];
 
 let currentUser = null;
 let pendingDeleteCallback = null;
-let peer = null;
-let currentRoomId = null;
+let activeTabName = 'history';
+let chartsInstance = { methods: null, cashea: null };
+let qrCodeInstance = null;
 
-const methodColors = {
-    'Pago Móvil': '#1A1A1D',
-    'Punto de Venta': '#8D99AE',
-    'Efectivo': '#3C3F45',
-    'Cashea 💛': '#f59e0b'
-};
+function applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('paytrack_theme', theme);
+    document.querySelectorAll('.btn-theme').forEach(btn => {
+        btn.textContent = theme === 'dark' ? '🌙' : '☀';
+    });
+}
+
+function toggleTheme() {
+    const current = document.documentElement.getAttribute('data-theme') || 'dark';
+    applyTheme(current === 'dark' ? 'light' : 'dark');
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+    const savedTheme = localStorage.getItem('paytrack_theme') || 'dark';
+    applyTheme(savedTheme);
+
+    document.querySelectorAll('.btn-theme').forEach(btn => {
+        btn.addEventListener('click', toggleTheme);
+    });
+
+    setupDniAutocomplete('modal-client-dni', 'modal-client-input', 'modal-client-phone');
+    setupDniAutocomplete('cashea-dni', 'cashea-client', 'cashea-phone');
+    setupQrGeneratorControls();
+    setupCasheaAutoCalculation();
+});
 
 function showToast(message, type = 'success') {
     const container = document.getElementById('toast-container');
@@ -52,7 +51,101 @@ function showToast(message, type = 'success') {
     }, 3000);
 }
 
-// ELEMENTOS DOM
+function setupDniAutocomplete(dniInputId, nameInputId, phoneInputId) {
+    const dniInput = document.getElementById(dniInputId);
+    if (!dniInput) return;
+
+    dniInput.addEventListener('input', (e) => {
+        const queryDni = e.target.value.trim().toLowerCase();
+        if (queryDni.length < 3) return;
+
+        const foundPayment = payments.find(p => p.dni && p.dni.toLowerCase() === queryDni);
+        const foundCashea = casheaRecords.find(c => c.dni && c.dni.toLowerCase() === queryDni);
+        const match = foundPayment || foundCashea;
+
+        if (match) {
+            const nameInput = document.getElementById(nameInputId);
+            const phoneInput = document.getElementById(phoneInputId);
+
+            if (nameInput && !nameInput.value) nameInput.value = match.user;
+            if (phoneInput && !phoneInput.value) phoneInput.value = match.phone;
+        }
+    });
+}
+
+// GENERADOR DE CÓDIGO QR PARA SUBIDA WEB REMOTA
+function setupQrGeneratorControls() {
+    const generateQrBtn = document.getElementById('generate-qr-btn');
+    const closeQrGenBtn = document.getElementById('close-qr-gen-btn');
+    const qrContainer = document.getElementById('qr-code-generator-container');
+    const qrElement = document.getElementById('qrcode');
+
+    if (generateQrBtn) {
+        generateQrBtn.addEventListener('click', () => {
+            const refInput = document.querySelector('.payment-row .pay-ref').value;
+            const amountInput = document.querySelector('.payment-row .pay-amount').value;
+
+            if (!refInput || !amountInput) {
+                showToast('Ingresa la referencia y el monto antes de generar el QR', 'error');
+                return;
+            }
+
+            if (qrContainer && qrElement) {
+                qrContainer.classList.remove('hidden');
+                qrElement.innerHTML = ''; 
+
+                const uploadUrl = `${window.location.origin}${window.location.pathname}?upload_ref=${encodeURIComponent(refInput)}&amt=${encodeURIComponent(amountInput)}`;
+                
+                qrCodeInstance = new QRCode(qrElement, {
+                    text: uploadUrl,
+                    width: 170,
+                    height: 170,
+                    colorDark: "#000000",
+                    colorLight: "#ffffff",
+                    correctLevel: QRCode.CorrectLevel.H
+                });
+
+                showToast('QR generado para enlace móvil', 'success');
+            }
+        });
+    }
+
+    if (closeQrGenBtn) {
+        closeQrGenBtn.addEventListener('click', () => {
+            if (qrContainer) qrContainer.classList.add('hidden');
+        });
+    }
+}
+
+// CÁLCULO Y AUTOCOMPLETADO DE CUOTAS CASHEA
+function setupCasheaAutoCalculation() {
+    const totalAmountInput = document.getElementById('cashea-total-amount');
+    const discountInput = document.getElementById('cashea-discount-percent');
+    const downPaymentInput = document.getElementById('cashea-down-payment-percent');
+    const installmentsInput = document.getElementById('cashea-total-installments');
+    const previewInput = document.getElementById('cashea-installment-preview');
+
+    function calculateInstallments() {
+        if (!totalAmountInput || !previewInput) return;
+        const total = parseFloat(totalAmountInput.value) || 0;
+        const discount = parseFloat(discountInput.value) || 0;
+        const downPct = parseFloat(downPaymentInput.value) || 25;
+        const installments = parseInt(installmentsInput.value) || 3;
+
+        const finalPrice = total * (1 - (discount / 100));
+        const initialClient = finalPrice * (downPct / 100);
+        const remainingBalance = finalPrice - initialClient;
+
+        const perInstallment = installments > 0 ? remainingBalance / installments : 0;
+        previewInput.value = `$${perInstallment.toFixed(2)} c/u (Restante: $${remainingBalance.toFixed(2)})`;
+    }
+
+    if (totalAmountInput) totalAmountInput.addEventListener('input', calculateInstallments);
+    if (discountInput) discountInput.addEventListener('input', calculateInstallments);
+    if (downPaymentInput) downPaymentInput.addEventListener('input', calculateInstallments);
+    if (installmentsInput) installmentsInput.addEventListener('input', calculateInstallments);
+}
+
 const landingContainer = document.getElementById('landing-container');
 const authContainer = document.getElementById('auth-container');
 const appContainer = document.getElementById('app-container');
@@ -71,38 +164,26 @@ const registerForm = document.getElementById('register-form');
 const showRegisterLink = document.getElementById('show-register');
 const showLoginLink = document.getElementById('show-login');
 
-// Pestañas
 const tabHistoryBtn = document.getElementById('tab-history-btn');
 const tabCasheaBtn = document.getElementById('tab-cashea-btn');
+const tabConciliacionBtn = document.getElementById('tab-conciliacion-btn');
 const tabSummaryBtn = document.getElementById('tab-summary-btn');
 
 const viewHistory = document.getElementById('view-history');
 const viewCashea = document.getElementById('view-cashea');
+const viewConciliacion = document.getElementById('view-conciliacion');
 const viewSummary = document.getElementById('view-summary');
 
-// Modales Pagos Regulares
+const floatPaymentBtn = document.getElementById('float-payment-btn');
+const floatCasheaBtn = document.getElementById('float-cashea-btn');
+const floatUnpaidBtn = document.getElementById('float-unpaid-btn');
+
 const paymentModal = document.getElementById('payment-modal');
-const openPaymentModalBtn = document.getElementById('open-payment-modal-btn');
 const closeModalBtn = document.getElementById('close-modal-btn');
-const floatingActionsBar = document.getElementById('floating-actions-bar');
+const paymentForm = document.getElementById('payment-form');
+const paymentFileInput = document.getElementById('payment-file-input');
 
-// Modal Editar Pago Regular
-const editPaymentModal = document.getElementById('edit-payment-modal');
-const closeEditModalBtn = document.getElementById('close-edit-modal-btn');
-const cancelEditBtn = document.getElementById('cancel-edit-btn');
-const editPaymentForm = document.getElementById('edit-payment-form');
-const editPaymentId = document.getElementById('edit-payment-id');
-const editClientInput = document.getElementById('edit-client-input');
-const editClientDni = document.getElementById('edit-client-dni');
-const editClientPhone = document.getElementById('edit-client-phone');
-const editPayMethod = document.getElementById('edit-pay-method');
-const editPayStatus = document.getElementById('edit-pay-status');
-const editPayAmount = document.getElementById('edit-pay-amount');
-const editPayRef = document.getElementById('edit-pay-ref');
-
-// Modales Cashea
 const casheaModal = document.getElementById('cashea-modal');
-const openCasheaModalBtn = document.getElementById('open-cashea-modal-btn');
 const closeCasheaModalBtn = document.getElementById('close-cashea-modal-btn');
 const cancelCasheaBtn = document.getElementById('cancel-cashea-btn');
 const casheaForm = document.getElementById('cashea-form');
@@ -112,63 +193,18 @@ const closeAbonoModalBtn = document.getElementById('close-abono-modal-btn');
 const cancelAbonoBtn = document.getElementById('cancel-abono-btn');
 const casheaAbonoForm = document.getElementById('cashea-abono-form');
 
-// Modal Deudores Unpaid
 const unpaidModal = document.getElementById('unpaid-modal');
-const openUnpaidModalBtn = document.getElementById('open-unpaid-modal-btn');
 const closeUnpaidModalBtn = document.getElementById('close-unpaid-modal-btn');
 const closeUnpaidModalFooterBtn = document.getElementById('close-unpaid-modal-footer-btn');
-const unpaidTableBody = document.getElementById('unpaid-table-body');
 
-// Modal de Confirmación Personalizado
 const confirmModal = document.getElementById('confirm-modal');
 const confirmMessage = document.getElementById('confirm-message');
 const confirmAcceptBtn = document.getElementById('confirm-accept-btn');
 const confirmCancelBtn = document.getElementById('confirm-cancel-btn');
 
-// Visualizador Imágenes
 const imageViewerModal = document.getElementById('image-viewer-modal');
-const viewerFullImage = document.getElementById('viewer-full-image');
 const closeViewerBtn = document.getElementById('close-viewer-btn');
 
-// Tabla & Métricas
-const paymentTableBody = document.getElementById('payment-table-body');
-const casheaTableBody = document.getElementById('cashea-table-body');
-const searchInput = document.getElementById('search-input');
-const filterStatusSelect = document.getElementById('filter-status');
-const exportExcelBtn = document.getElementById('export-excel-btn');
-const exportCasheaExcelBtn = document.getElementById('export-cashea-excel-btn');
-const statsDatePicker = document.getElementById('stats-date-picker');
-const resetDateBtn = document.getElementById('reset-date-btn');
-
-const kpiTotalAmount = document.getElementById('kpi-total-amount');
-const kpiCasheaCollected = document.getElementById('kpi-cashea-collected');
-const kpiCasheaPending = document.getElementById('kpi-cashea-pending');
-const kpiTotalTx = document.getElementById('kpi-total-tx');
-const kpiTopFreqClient = document.getElementById('kpi-top-freq-client');
-const kpiTopSpentClient = document.getElementById('kpi-top-spent-client');
-
-const svgDonut = document.getElementById('svg-donut');
-const chartLegend = document.getElementById('chart-legend');
-const barChartContainer = document.getElementById('bar-chart-container');
-
-// INICIALIZACIÓN: DETECTAR SI LA PÁGINA SE ABRIÓ DESDE EL TELÉFONO VÍA ESCANEO QR
-window.addEventListener('DOMContentLoaded', () => {
-    const urlParams = new URLSearchParams(window.location.search);
-    const roomId = urlParams.get('room');
-
-    if (roomId) {
-        if (landingContainer) landingContainer.classList.add('hidden');
-        if (authContainer) authContainer.classList.add('hidden');
-        if (appContainer) appContainer.classList.add('hidden');
-
-        const mobileView = document.getElementById('mobile-upload-view');
-        if (mobileView) mobileView.classList.remove('hidden');
-
-        setupMobileUploader(roomId);
-    }
-});
-
-// CONTROL DE NAVEGACIÓN Y SIDEBAR
 function openSidebar() { 
     if (appSidebar && sidebarOverlay) {
         appSidebar.classList.add('open'); 
@@ -186,24 +222,45 @@ function closeSidebar() {
 if (mobileMenuToggle) mobileMenuToggle.addEventListener('click', openSidebar);
 if (sidebarOverlay) sidebarOverlay.addEventListener('click', closeSidebar);
 
-function switchTab(activeBtn, activeView) {
-    [tabHistoryBtn, tabCasheaBtn, tabSummaryBtn].forEach(btn => btn && btn.classList.remove('active'));
-    [viewHistory, viewCashea, viewSummary].forEach(view => view && view.classList.add('hidden'));
+function updateFloatingButtons() {
+    if (floatPaymentBtn) floatPaymentBtn.classList.add('hidden');
+    if (floatCasheaBtn) floatCasheaBtn.classList.add('hidden');
+    if (floatUnpaidBtn) floatUnpaidBtn.classList.add('hidden');
+
+    if (activeTabName === 'history') {
+        if (floatPaymentBtn) floatPaymentBtn.classList.remove('hidden');
+    } else if (activeTabName === 'cashea') {
+        if (floatCasheaBtn) floatCasheaBtn.classList.remove('hidden');
+        if (floatUnpaidBtn) floatUnpaidBtn.classList.remove('hidden');
+    }
+}
+
+function switchTab(activeBtn, activeView, tabName) {
+    [tabHistoryBtn, tabCasheaBtn, tabConciliacionBtn, tabSummaryBtn].forEach(btn => btn && btn.classList.remove('active'));
+    [viewHistory, viewCashea, viewConciliacion, viewSummary].forEach(view => view && view.classList.add('hidden'));
 
     if (activeBtn) activeBtn.classList.add('active');
     if (activeView) activeView.classList.remove('hidden');
+    activeTabName = tabName;
+
+    updateFloatingButtons();
 
     if (activeView === viewHistory) renderTable();
     if (activeView === viewCashea) renderCasheaTable();
+    if (activeView === viewConciliacion) renderConciliacionView();
     if (activeView === viewSummary) renderMetrics();
     closeSidebar();
 }
 
-if (tabHistoryBtn) tabHistoryBtn.addEventListener('click', (e) => { e.preventDefault(); switchTab(tabHistoryBtn, viewHistory); });
-if (tabCasheaBtn) tabCasheaBtn.addEventListener('click', (e) => { e.preventDefault(); switchTab(tabCasheaBtn, viewCashea); });
-if (tabSummaryBtn) tabSummaryBtn.addEventListener('click', (e) => { e.preventDefault(); switchTab(tabSummaryBtn, viewSummary); });
+if (tabHistoryBtn) tabHistoryBtn.addEventListener('click', (e) => { e.preventDefault(); switchTab(tabHistoryBtn, viewHistory, 'history'); });
+if (tabCasheaBtn) tabCasheaBtn.addEventListener('click', (e) => { e.preventDefault(); switchTab(tabCasheaBtn, viewCashea, 'cashea'); });
+if (tabConciliacionBtn) tabConciliacionBtn.addEventListener('click', (e) => { e.preventDefault(); switchTab(tabConciliacionBtn, viewConciliacion, 'conciliacion'); });
+if (tabSummaryBtn) tabSummaryBtn.addEventListener('click', (e) => { e.preventDefault(); switchTab(tabSummaryBtn, viewSummary, 'summary'); });
 
-// AUTHENTICATION & LOGIN / REGISTRO CORREGIDO
+if (floatPaymentBtn) floatPaymentBtn.addEventListener('click', () => openPaymentModalForNew());
+if (floatCasheaBtn) floatCasheaBtn.addEventListener('click', () => { if (casheaModal) casheaModal.classList.remove('hidden'); });
+if (floatUnpaidBtn) floatUnpaidBtn.addEventListener('click', () => { renderUnpaidList(); if (unpaidModal) unpaidModal.classList.remove('hidden'); });
+
 function goToAuth(showRegister = false) {
     if (landingContainer && authContainer) {
         landingContainer.classList.add('hidden');
@@ -238,14 +295,13 @@ if (showLoginLink) showLoginLink.addEventListener('click', (e) => {
     loginForm.classList.remove('hidden'); 
 });
 
-// FORMULARIO DE INICIO DE SESIÓN
 if (loginForm) {
     loginForm.addEventListener('submit', (e) => {
         e.preventDefault();
         const userInput = document.getElementById('login-user').value.trim();
         const passInput = document.getElementById('login-pass').value.trim();
 
-        const currentUsers = JSON.parse(localStorage.getItem('app_users')) || users;
+        const currentUsers = JSON.parse(localStorage.getItem('paytrack_users')) || users;
         const foundUser = currentUsers.find(u => u.user.toLowerCase() === userInput.toLowerCase() && u.pass === passInput);
 
         if (foundUser) {
@@ -253,12 +309,11 @@ if (loginForm) {
             landingContainer.classList.add('hidden');
             authContainer.classList.add('hidden');
             appContainer.classList.remove('hidden');
-            if (floatingActionsBar) floatingActionsBar.classList.remove('hidden');
 
             const displaySpan = document.getElementById('user-display');
             if (displaySpan) displaySpan.textContent = currentUser.user;
 
-            showToast(`Bienvenido, ${currentUser.user}`, 'success');
+            showToast(`Bienvenido a Paytrack, ${currentUser.user}`, 'success');
             setupDashboard();
         } else {
             showToast('Usuario o contraseña incorrectos', 'error');
@@ -266,19 +321,13 @@ if (loginForm) {
     });
 }
 
-// FORMULARIO DE REGISTRO
 if (registerForm) {
     registerForm.addEventListener('submit', (e) => {
         e.preventDefault();
         const regUser = document.getElementById('reg-user').value.trim();
         const regPass = document.getElementById('reg-pass').value.trim();
 
-        if (!regUser || !regPass) {
-            showToast('Por favor completa todos los campos', 'error');
-            return;
-        }
-
-        let currentUsers = JSON.parse(localStorage.getItem('app_users')) || users;
+        let currentUsers = JSON.parse(localStorage.getItem('paytrack_users')) || users;
         const exists = currentUsers.some(u => u.user.toLowerCase() === regUser.toLowerCase());
 
         if (exists) {
@@ -289,11 +338,10 @@ if (registerForm) {
         const newUser = { user: regUser, pass: regPass, role: 'admin' };
         currentUsers.push(newUser);
         users = currentUsers;
-        localStorage.setItem('app_users', JSON.stringify(currentUsers));
+        localStorage.setItem('paytrack_users', JSON.stringify(currentUsers));
 
         showToast('Cuenta creada con éxito. ¡Inicia sesión!', 'success');
         registerForm.reset();
-        
         registerForm.classList.add('hidden');
         loginForm.classList.remove('hidden');
         document.getElementById('login-user').value = regUser;
@@ -305,13 +353,11 @@ if (logoutBtn) {
     logoutBtn.addEventListener('click', () => {
         currentUser = null;
         appContainer.classList.add('hidden');
-        if (floatingActionsBar) floatingActionsBar.classList.add('hidden');
         landingContainer.classList.remove('hidden');
         showToast('Sesión cerrada correctamente', 'success');
     });
 }
 
-// MODAL DE CONFIRMACIÓN PERSONALIZADO (ACEPTAR / RECHAZAR)
 function showConfirmModal(message, callback) {
     if (confirmMessage && confirmModal) {
         confirmMessage.textContent = message;
@@ -329,26 +375,26 @@ if (confirmCancelBtn) {
 
 if (confirmAcceptBtn) {
     confirmAcceptBtn.addEventListener('click', () => {
-        if (pendingDeleteCallback) {
-            pendingDeleteCallback();
-        }
+        if (pendingDeleteCallback) pendingDeleteCallback();
         if (confirmModal) confirmModal.classList.add('hidden');
         pendingDeleteCallback = null;
     });
 }
 
-// MODALES PAGOS REGULARES
-if (openPaymentModalBtn) openPaymentModalBtn.addEventListener('click', () => paymentModal && paymentModal.classList.remove('hidden'));
-if (closeModalBtn) closeModalBtn.addEventListener('click', () => paymentModal && paymentModal.classList.add('hidden'));
+function openPaymentModalForNew() {
+    document.getElementById('payment-modal-title').textContent = 'Registrar Nuevo Pago';
+    document.getElementById('edit-payment-id').value = '';
+    paymentForm.reset();
+    if (paymentModal) paymentModal.classList.remove('hidden');
+}
 
-if (closeEditModalBtn) closeEditModalBtn.addEventListener('click', () => editPaymentModal && editPaymentModal.classList.add('hidden'));
-if (cancelEditBtn) cancelEditBtn.addEventListener('click', () => editPaymentModal && editPaymentModal.classList.add('hidden'));
+if (closeModalBtn) closeModalBtn.addEventListener('click', () => paymentModal && paymentModal.classList.add('hidden'));
 if (closeViewerBtn) closeViewerBtn.addEventListener('click', () => imageViewerModal && imageViewerModal.classList.add('hidden'));
 
-const paymentForm = document.getElementById('payment-form');
 if (paymentForm) {
     paymentForm.addEventListener('submit', (e) => {
         e.preventDefault();
+        const editId = document.getElementById('edit-payment-id').value;
         const targetUser = document.getElementById('modal-client-input').value.trim();
         const dni = document.getElementById('modal-client-dni').value.trim();
         const phone = document.getElementById('modal-client-phone').value.trim();
@@ -358,332 +404,132 @@ if (paymentForm) {
         const status = row.querySelector('.pay-status').value;
         const amount = parseFloat(row.querySelector('.pay-amount').value);
         const ref = row.querySelector('.pay-ref').value;
-        const imgElement = row.querySelector('.img-preview');
-        const imageData = imgElement ? imgElement.src : '';
 
-        const now = new Date();
-        const formattedDateTime = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
-
-        payments.push({
-            id: Date.now() + Math.random(),
-            user: targetUser,
-            dni, phone, method, amount, ref, status,
-            datetime: formattedDateTime,
-            image: imageData
-        });
-
-        localStorage.setItem('app_payments', JSON.stringify(payments));
-        paymentModal.classList.add('hidden');
-        showToast('Pago registrado correctamente', 'success');
-        setupDashboard();
-    });
-}
-
-// CONEXIÓN P2P EN VIVO: GENERACIÓN DE CÓDIGO QR EN LA COMPUTADORA
-window.generatePhoneQr = function() {
-    const qrContainer = document.getElementById('qr-box-container');
-    const qrDisplay = document.getElementById('qrcode-display');
-    const qrStatus = document.getElementById('qr-status-text');
-
-    if (!qrContainer || !qrDisplay) return;
-
-    if (!qrContainer.classList.contains('hidden')) {
-        qrContainer.classList.add('hidden');
-        if (peer) peer.destroy();
-        return;
-    }
-
-    qrDisplay.innerHTML = '';
-    currentRoomId = 'paytrack-' + Math.random().toString(36).substring(2, 9);
-    qrContainer.classList.remove('hidden');
-    qrStatus.textContent = 'Iniciando sala y esperando teléfono...';
-
-    peer = new Peer(currentRoomId);
-
-    peer.on('open', (id) => {
-        const mobileUrl = `${window.location.origin}${window.location.pathname}?room=${id}`;
-        new QRCode(qrDisplay, {
-            text: mobileUrl,
-            width: 140,
-            height: 140
-        });
-        qrStatus.textContent = '🟢 QR listo. Escanéalo con tu teléfono.';
-    });
-
-    peer.on('connection', (conn) => {
-        qrStatus.textContent = '📲 ¡Teléfono conectado! Esperando envío de foto...';
-
-        conn.on('data', (imageData) => {
-            const previewBox = document.querySelector('.img-preview-box');
-            const imgElement = previewBox.querySelector('.img-preview');
-
-            imgElement.src = imageData;
-            previewBox.classList.remove('hidden');
-            qrContainer.classList.add('hidden');
-
-            showToast('📷 ¡Comprobante recibido desde el teléfono!', 'success');
-            peer.destroy();
-        });
-    });
-};
-
-// LÓGICA QUE EJECUTA EL TELÉFONO DESPUÉS DE ESCANEAR EL QR
-function setupMobileUploader(targetRoomId) {
-    const fileInput = document.getElementById('mobile-file-input');
-    const previewBox = document.getElementById('mobile-preview-box');
-    const previewImg = document.getElementById('mobile-preview-img');
-    const sendBtn = document.getElementById('mobile-send-btn');
-
-    let base64Image = '';
-
-    fileInput.addEventListener('change', (e) => {
-        const file = e.target.files[0];
-        if (file) {
+        let imageBase64 = '';
+        const fileInput = paymentFileInput;
+        if (fileInput && fileInput.files && fileInput.files[0]) {
             const reader = new FileReader();
-            reader.onload = (evt) => {
-                base64Image = evt.target.result;
-                previewImg.src = base64Image;
-                previewBox.classList.remove('hidden');
+            reader.onload = function(uploadEvent) {
+                imageBase64 = uploadEvent.target.result;
+                savePaymentData(editId, targetUser, dni, phone, method, status, amount, ref, imageBase64);
             };
-            reader.readAsDataURL(file);
+            reader.readAsDataURL(fileInput.files[0]);
+        } else {
+            if (editId) {
+                const existing = payments.find(p => p.id == editId);
+                imageBase64 = existing ? existing.image : '';
+            }
+            savePaymentData(editId, targetUser, dni, phone, method, status, amount, ref, imageBase64);
         }
     });
-
-    sendBtn.addEventListener('click', () => {
-        sendBtn.disabled = true;
-        sendBtn.textContent = 'Enviando foto a la PC...';
-
-        const mobilePeer = new Peer();
-        mobilePeer.on('open', () => {
-            const conn = mobilePeer.connect(targetRoomId);
-            conn.on('open', () => {
-                conn.send(base64Image);
-                alert('✅ ¡Foto transmitida con éxito a la computadora!');
-                setTimeout(() => { window.close(); }, 1000);
-            });
-        });
-    });
 }
 
-// PREVISUALIZACIÓN DE IMÁGENES LOCALES
-window.previewImage = function(input) {
-    const previewBox = input.parentElement.querySelector('.img-preview-box');
-    const imgElement = previewBox.querySelector('.img-preview');
-    if (input.files && input.files[0]) {
-        const reader = new FileReader();
-        reader.onload = function(e) {
-            imgElement.src = e.target.result;
-            previewBox.classList.remove('hidden');
-        };
-        reader.readAsDataURL(input.files[0]);
+function savePaymentData(editId, user, dni, phone, method, status, amount, ref, image) {
+    const now = new Date();
+    const formattedDateTime = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+
+    if (editId) {
+        payments = payments.map(p => {
+            if (p.id == editId) {
+                return { ...p, user, dni, phone, method, status, amount, ref, image: image || p.image };
+            }
+            return p;
+        });
+        showToast('Pago actualizado correctamente', 'success');
+    } else {
+        payments.push({
+            id: Date.now() + Math.random(),
+            user, dni, phone, method, amount, ref, status,
+            datetime: formattedDateTime,
+            image
+        });
+        showToast('Pago registrado con fecha y hora automática', 'success');
     }
-};
 
-window.removeImage = function(btn) {
-    const previewBox = btn.parentElement;
-    const input = previewBox.parentElement.querySelector('.pay-image-input');
-    input.value = '';
-    previewBox.querySelector('.img-preview').src = '';
-    previewBox.classList.add('hidden');
-};
+    localStorage.setItem('paytrack_payments', JSON.stringify(payments));
+    paymentModal.classList.add('hidden');
+    paymentForm.reset();
+    setupDashboard();
+}
 
-// MÓDULO CASHEA
-if (openCasheaModalBtn) openCasheaModalBtn.addEventListener('click', () => casheaModal && casheaModal.classList.remove('hidden'));
 if (closeCasheaModalBtn) closeCasheaModalBtn.addEventListener('click', () => casheaModal && casheaModal.classList.add('hidden'));
 if (cancelCasheaBtn) cancelCasheaBtn.addEventListener('click', () => casheaModal && casheaModal.classList.add('hidden'));
 
 if (closeAbonoModalBtn) closeAbonoModalBtn.addEventListener('click', () => casheaAbonoModal && casheaAbonoModal.classList.add('hidden'));
 if (cancelAbonoBtn) cancelAbonoBtn.addEventListener('click', () => casheaAbonoModal && casheaAbonoModal.classList.add('hidden'));
 
-// MODAL LISTA DE DEUDORES
-if (openUnpaidModalBtn) {
-    openUnpaidModalBtn.addEventListener('click', () => {
-        renderUnpaidList();
-        if (unpaidModal) unpaidModal.classList.remove('hidden');
-    });
-}
 if (closeUnpaidModalBtn) closeUnpaidModalBtn.addEventListener('click', () => unpaidModal && unpaidModal.classList.add('hidden'));
 if (closeUnpaidModalFooterBtn) closeUnpaidModalFooterBtn.addEventListener('click', () => unpaidModal && unpaidModal.classList.add('hidden'));
 
 if (casheaForm) {
     casheaForm.addEventListener('submit', (e) => {
         e.preventDefault();
+        
+        const orderId = document.getElementById('cashea-order-id').value.trim();
         const user = document.getElementById('cashea-client').value.trim();
         const dni = document.getElementById('cashea-dni').value.trim();
         const phone = document.getElementById('cashea-phone').value.trim();
         const totalAmount = parseFloat(document.getElementById('cashea-total-amount').value);
         const discountPercent = parseFloat(document.getElementById('cashea-discount-percent').value) || 0;
-        const downPaymentPercent = parseFloat(document.getElementById('cashea-down-payment-percent').value);
+        const downPaymentPercent = parseFloat(document.getElementById('cashea-down-payment-percent').value) || 25.0;
         const totalInstallments = parseInt(document.getElementById('cashea-total-installments').value);
         const nextDate = document.getElementById('cashea-next-date').value;
 
+        if (downPaymentPercent < 25) {
+            showToast('La inicial mínima del cliente debe ser al menos 25%', 'error');
+            return;
+        }
+
+        const orderExists = casheaRecords.some(c => c.orderId.toLowerCase() === orderId.toLowerCase());
+        if (orderExists) {
+            showToast('Ese Número de Orden de Cashea ya existe', 'error');
+            return;
+        }
+
         const discountAmount = totalAmount * (discountPercent / 100.0);
         const finalPrice = totalAmount - discountAmount;
-        const initialPaidAmount = finalPrice * (downPaymentPercent / 100.0);
-        const remaining = finalPrice - initialPaidAmount;
+        const clientDownPaymentAmount = finalPrice * (downPaymentPercent / 100.0);
 
-        casheaRecords.push({
+        const now = new Date();
+        const formattedDateTime = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+
+        const newCashea = {
             id: Date.now() + Math.random(),
+            orderId,
             user, dni, phone,
             totalAmount,
             discountPercent,
             downPaymentPercent,
-            paidAmount: initialPaidAmount,
+            paidAmount: clientDownPaymentAmount,
             totalInstallments,
             paidInstallments: 0,
             nextDate,
-            status: remaining <= 0 ? 'Pagado' : 'En Proceso'
-        });
+            status: 'En Proceso',
+            settlementStatus: 'En Tránsito',
+            datetime: formattedDateTime
+        };
 
-        localStorage.setItem('app_cashea_records', JSON.stringify(casheaRecords));
+        casheaRecords.push(newCashea);
+        localStorage.setItem('paytrack_cashea_records', JSON.stringify(casheaRecords));
+
+        payments.push({
+            id: Date.now() + Math.random(),
+            user, dni, phone,
+            method: 'Cashea (Inicial)',
+            amount: clientDownPaymentAmount,
+            ref: `Inicial Ord #${orderId}`,
+            status: 'Pagado',
+            datetime: formattedDateTime,
+            image: ''
+        });
+        localStorage.setItem('paytrack_payments', JSON.stringify(payments));
+
         casheaModal.classList.add('hidden');
         casheaForm.reset();
-        showToast('Registro de Cashea creado con éxito', 'success');
-        renderCasheaTable();
-        renderMetrics();
+        showToast(`Orden Cashea #${orderId} registrada correctamente`, 'success');
+        setupDashboard();
     });
 }
-
-function renderCasheaTable() {
-    if (!casheaTableBody) return;
-    casheaTableBody.innerHTML = '';
-    const todayStr = new Date().toISOString().slice(0, 10);
-    let todayAlerts = [];
-
-    casheaRecords.forEach(c => {
-        const discountAmount = c.totalAmount * ((c.discountPercent || 0) / 100.0);
-        const finalPrice = c.totalAmount - discountAmount;
-        const remaining = finalPrice - c.paidAmount;
-
-        if (c.nextDate === todayStr && remaining > 0) {
-            const initialDownInCash = finalPrice * ((c.downPaymentPercent || 0) / 100.0);
-            const installmentPrice = (finalPrice - initialDownInCash) / (c.totalInstallments || 3);
-            todayAlerts.push(`<strong>${c.user}</strong> debe abonar hoy $${installmentPrice.toFixed(2)} (Cuota ${c.paidInstallments + 1}/${c.totalInstallments})`);
-        }
-
-        const tr = document.createElement('tr');
-        let statusClass = c.status === 'Pagado' ? 'status-pagado' : 'status-proceso';
-
-        tr.innerHTML = `
-            <td><strong>${c.user}</strong></td>
-            <td>${c.dni}<br><small style="color:var(--charcoal-slate);">${c.phone}</small></td>
-            <td>$${c.totalAmount.toFixed(2)}</td>
-            <td>${c.discountPercent > 0 ? `<span style="color:red; font-weight:bold;">-${c.discountPercent}%</span>` : '0%'}</td>
-            <td><strong style="color:var(--status-pagado);">$${finalPrice.toFixed(2)}</strong></td>
-            <td>${c.downPaymentPercent || 0}%</td>
-            <td><strong style="color:var(--status-pagado);">$${c.paidAmount.toFixed(2)}</strong></td>
-            <td><strong style="color:var(--status-no-registrado);">$${Math.max(0, remaining).toFixed(2)}</strong></td>
-            <td>${c.paidInstallments} / ${c.totalInstallments}</td>
-            <td>${c.nextDate || 'N/A'}</td>
-            <td><span class="badge ${statusClass}">${c.status}</span></td>
-            <td>
-                <div class="action-buttons-group">
-                    ${remaining > 0 ? `<button class="btn-icon-action btn-icon-edit-cashea" onclick="openAbonoModal(${c.id})" title="Abonar Cuota Cashea">➕</button>` : ''}
-                    <button class="btn-icon-action btn-icon-delete" onclick="deleteCasheaRecord(${c.id})" title="Borrar">✕</button>
-                </div>
-            </td>
-        `;
-
-        casheaTableBody.appendChild(tr);
-    });
-
-    const alertText = document.getElementById('cashea-today-text');
-    if (alertText) {
-        if (todayAlerts.length > 0) {
-            alertText.innerHTML = todayAlerts.join('<br>');
-        } else {
-            alertText.textContent = 'No hay cuotas ni compromisos de Cashea programados para cobrar el día de hoy.';
-        }
-    }
-}
-
-// EXPORTACIÓN EXCLUSIVA DE CASHEA A EXCEL (.CSV)
-if (exportCasheaExcelBtn) {
-    exportCasheaExcelBtn.addEventListener('click', () => {
-        if (casheaRecords.length === 0) {
-            showToast('No hay registros de Cashea para exportar', 'error');
-            return;
-        }
-
-        let csvContent = '\uFEFF';
-        csvContent += 'Cliente;Cédula;Teléfono;Precio Base ($);Descuento (%);Precio Final ($);Inicial (%);Monto Abonado ($);Restante por Cobrar ($);Cuotas Pagadas;Total Cuotas;Próx. Cobro;Estado\n';
-
-        casheaRecords.forEach(c => {
-            const discAmount = c.totalAmount * ((c.discountPercent || 0) / 100.0);
-            const finalPrice = c.totalAmount - discAmount;
-            const remaining = Math.max(0, finalPrice - c.paidAmount);
-
-            csvContent += `"${c.user}";"${c.dni}";"${c.phone}";"${c.totalAmount.toFixed(2)}";"${(c.discountPercent||0).toFixed(2)}";"${finalPrice.toFixed(2)}";"${(c.downPaymentPercent||0).toFixed(2)}";"${c.paidAmount.toFixed(2)}";"${remaining.toFixed(2)}";"${c.paidInstallments}";"${c.totalInstallments}";"${c.nextDate || ''}";"${c.status}"\n`;
-        });
-
-        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.setAttribute('href', url);
-        link.setAttribute('download', `PayTrack_Cashea_${new Date().toISOString().slice(0, 10)}.csv`);
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        showToast('Reporte de Cashea exportado a Excel correctamente', 'success');
-    });
-}
-
-// RENDERIZAR TABLA DE DEUDORES DENTRO DEL MODAL
-function renderUnpaidList() {
-    if (!unpaidTableBody) return;
-    unpaidTableBody.innerHTML = '';
-    const todayStr = new Date().toISOString().slice(0, 10);
-    const unpaidList = casheaRecords.filter(c => {
-        const discountAmount = c.totalAmount * ((c.discountPercent || 0) / 100.0);
-        const finalPrice = c.totalAmount - discountAmount;
-        return (finalPrice - c.paidAmount) > 0;
-    });
-
-    if (unpaidList.length === 0) {
-        unpaidTableBody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--charcoal-slate);">🎉 ¡Excelente! No hay clientes con deudas pendientes en Cashea.</td></tr>';
-        return;
-    }
-
-    unpaidList.forEach(c => {
-        const discountAmount = c.totalAmount * ((c.discountPercent || 0) / 100.0);
-        const finalPrice = c.totalAmount - discountAmount;
-        const remaining = finalPrice - c.paidAmount;
-
-        const tr = document.createElement('tr');
-        const isOverdue = c.nextDate <= todayStr;
-        const statusBadge = isOverdue ? 
-            `<span class="badge status-no-registrado">⚠️ Vencido / Cobrar Hoy</span>` : 
-            `<span class="badge status-proceso">Pendiente</span>`;
-
-        tr.innerHTML = `
-            <td><strong>${c.user}</strong></td>
-            <td>${c.dni}<br><small style="color:var(--charcoal-slate);">${c.phone}</small></td>
-            <td>${c.discountPercent > 0 ? `<span style="color:red; font-weight:bold;">-${c.discountPercent}%</span>` : '0%'}</td>
-            <td><strong style="color:var(--status-no-registrado);">$${remaining.toFixed(2)}</strong></td>
-            <td><strong>${c.nextDate || 'N/A'}</strong></td>
-            <td>${statusBadge}</td>
-        `;
-        unpaidTableBody.appendChild(tr);
-    });
-}
-
-window.openAbonoModal = function(id) {
-    const c = casheaRecords.find(item => item.id === id);
-    if (!c) return;
-
-    const discountAmount = c.totalAmount * ((c.discountPercent || 0) / 100.0);
-    const finalPrice = c.totalAmount - discountAmount;
-    const initialDownInCash = finalPrice * ((c.downPaymentPercent || 0) / 100.0);
-    const remainingInstallments = c.totalInstallments - c.paidInstallments;
-    const suggestedAmount = remainingInstallments > 0 ? (finalPrice - initialDownInCash) / c.totalInstallments : 0;
-
-    document.getElementById('abono-cashea-id').value = c.id;
-    document.getElementById('abono-client-name').value = c.user;
-    document.getElementById('abono-amount').value = suggestedAmount.toFixed(2);
-    document.getElementById('abono-next-date').value = '';
-
-    if (casheaAbonoModal) casheaAbonoModal.classList.remove('hidden');
-};
 
 if (casheaAbonoForm) {
     casheaAbonoForm.addEventListener('submit', (e) => {
@@ -692,316 +538,378 @@ if (casheaAbonoForm) {
         const amount = parseFloat(document.getElementById('abono-amount').value);
         const nextDate = document.getElementById('abono-next-date').value;
 
-        const c = casheaRecords.find(item => item.id === id);
-        if (c) {
-            c.paidAmount += amount;
-            c.paidInstallments += 1;
-            c.nextDate = nextDate;
+        const record = casheaRecords.find(c => c.id === id);
+        if (record) {
+            record.paidAmount += amount;
+            record.paidInstallments += 1;
+            record.nextDate = nextDate;
 
-            const discountAmount = c.totalAmount * ((c.discountPercent || 0) / 100.0);
-            const finalPrice = c.totalAmount - discountAmount;
-            if (c.paidAmount >= finalPrice) {
-                c.status = 'Pagado';
+            const finalPrice = record.totalAmount * (1 - (record.discountPercent / 100));
+            
+            if (record.paidAmount >= finalPrice) {
+                record.status = 'Pagado';
+                record.settlementStatus = 'Liquidado';
             }
 
-            localStorage.setItem('app_cashea_records', JSON.stringify(casheaRecords));
+            localStorage.setItem('paytrack_cashea_records', JSON.stringify(casheaRecords));
+
+            const now = new Date();
+            const formattedDateTime = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+            
+            payments.push({
+                id: Date.now() + Math.random(),
+                user: record.user,
+                dni: record.dni,
+                phone: record.phone,
+                method: 'Cashea (Cuota)',
+                amount: amount,
+                ref: `Cuota Ord #${record.orderId}`,
+                status: 'Pagado',
+                datetime: formattedDateTime,
+                image: ''
+            });
+            localStorage.setItem('paytrack_payments', JSON.stringify(payments));
+
             casheaAbonoModal.classList.add('hidden');
-            showToast('Abono procesado con éxito', 'success');
-            renderCasheaTable();
-            renderMetrics();
-        }
-    });
-}
-
-window.deleteCasheaRecord = function(id) {
-    showConfirmModal('¿Deseas eliminar permanentemente este registro de Cashea?', () => {
-        casheaRecords = casheaRecords.filter(c => c.id !== id);
-        localStorage.setItem('app_cashea_records', JSON.stringify(casheaRecords));
-        showToast('Registro de Cashea eliminado', 'success');
-        renderCasheaTable();
-        renderMetrics();
-    });
-};
-
-// DASHBOARD PAGOS REGULARES Y MÉTRICAS
-function setupDashboard() {
-    renderTable();
-    renderCasheaTable();
-    renderMetrics();
-}
-
-// BÚSQUEDAS Y FILTROS
-if (searchInput) searchInput.addEventListener('input', renderTable);
-if (filterStatusSelect) filterStatusSelect.addEventListener('change', renderTable);
-if (statsDatePicker) statsDatePicker.addEventListener('change', renderMetrics);
-if (resetDateBtn) {
-    resetDateBtn.addEventListener('click', () => {
-        statsDatePicker.value = '';
-        renderMetrics();
-    });
-}
-
-function renderTable() {
-    if (!paymentTableBody) return;
-    paymentTableBody.innerHTML = '';
-    let visible = [...payments];
-
-    const term = searchInput ? searchInput.value.toLowerCase().trim() : '';
-    if (term) {
-        visible = visible.filter(p => 
-            p.user.toLowerCase().includes(term) ||
-            (p.dni && p.dni.toLowerCase().includes(term)) ||
-            (p.phone && p.phone.toLowerCase().includes(term)) ||
-            p.method.toLowerCase().includes(term) ||
-            p.ref.toLowerCase().includes(term) ||
-            (p.datetime && p.datetime.includes(term))
-        );
-    }
-
-    const selectedFilter = filterStatusSelect ? filterStatusSelect.value : 'TODOS';
-    if (selectedFilter !== 'TODOS') {
-        visible = visible.filter(p => p.status === selectedFilter);
-    }
-
-    visible.forEach(p => {
-        const tr = document.createElement('tr');
-
-        let statusClass = 'status-proceso';
-        if (p.status === 'Pagado') statusClass = 'status-pagado';
-        if (p.status === 'No Registrado') statusClass = 'status-no-registrado';
-
-        const imageContent = p.image ? 
-            `<img src="${p.image}" class="thumb-img" onclick="viewImage('${p.image}')" alt="Comprobante">` : 
-            `<span class="no-img-text">Sin foto</span>`;
-
-        tr.innerHTML = `
-            <td class="date-cell">${p.datetime || 'N/A'}</td>
-            <td><strong>${p.user}</strong></td>
-            <td>${p.dni || 'N/A'}</td>
-            <td>${p.phone || 'N/A'}</td>
-            <td>${imageContent}</td>
-            <td>${p.method}</td>
-            <td>$${p.amount.toFixed(2)}</td>
-            <td>${p.ref}</td>
-            <td><span class="badge ${statusClass}">${p.status}</span></td>
-            <td>
-                <div class="action-buttons-group">
-                    <button class="btn-icon-action btn-icon-edit" onclick="openEditModal(${p.id})" title="Editar">✏️</button>
-                    <button class="btn-icon-action btn-icon-delete" onclick="deletePayment(${p.id})" title="Borrar">✕</button>
-                </div>
-            </td>
-        `;
-
-        paymentTableBody.appendChild(tr);
-    });
-}
-
-// ABRIR Y GUARDAR EDICIÓN DE PAGO REGULAR
-window.openEditModal = function(id) {
-    const p = payments.find(item => item.id === id);
-    if (!p) return;
-
-    editPaymentId.value = p.id;
-    editClientInput.value = p.user;
-    editClientDni.value = p.dni || '';
-    editClientPhone.value = p.phone || '';
-    editPayMethod.value = p.method;
-    editPayStatus.value = p.status;
-    editPayAmount.value = p.amount;
-    editPayRef.value = p.ref;
-
-    if (editPaymentModal) editPaymentModal.classList.remove('hidden');
-};
-
-if (editPaymentForm) {
-    editPaymentForm.addEventListener('submit', (e) => {
-        e.preventDefault();
-        const id = parseFloat(editPaymentId.value);
-        const payment = payments.find(p => p.id === id);
-
-        if (payment) {
-            payment.user = editClientInput.value.trim();
-            payment.dni = editClientDni.value.trim();
-            payment.phone = editClientPhone.value.trim();
-            payment.method = editPayMethod.value;
-            payment.status = editPayStatus.value;
-            payment.amount = parseFloat(editPayAmount.value);
-            payment.ref = editPayRef.value.trim();
-
-            localStorage.setItem('app_payments', JSON.stringify(payments));
-            editPaymentModal.classList.add('hidden');
-            showToast('Pago actualizado con éxito', 'success');
+            casheaAbonoForm.reset();
+            showToast('Abono registrado con éxito', 'success');
             setupDashboard();
         }
     });
 }
 
-// ABRIR COMPROBANTE COMPLETO
-window.viewImage = function(src) {
-    if (viewerFullImage && imageViewerModal) {
-        viewerFullImage.src = src;
-        imageViewerModal.classList.remove('hidden');
-    }
-};
-
-// EXPORTACIÓN A EXCEL (.CSV) DE PAGOS REGULARES
-if (exportExcelBtn) {
-    exportExcelBtn.addEventListener('click', () => {
-        if (payments.length === 0) {
-            showToast('No hay datos para exportar', 'error');
-            return;
-        }
-
-        let csvContent = '\uFEFF';
-        csvContent += 'Fecha y Hora;Cliente;Cédula;Teléfono;Método;Monto ($);Referencia;Estado\n';
-
+function exportTableToExcel(filename, tableType) {
+    let csv = [];
+    if (tableType === 'payments') {
+        csv.push(["FechaHora", "Cliente", "Cedula", "Telefono", "Metodo", "Monto", "Referencia", "Estado"]);
         payments.forEach(p => {
-            csvContent += `"${p.datetime || ''}";"${p.user}";"${p.dni || ''}";"${p.phone || ''}";"${p.method}";"${p.amount.toFixed(2)}";"${p.ref}";"${p.status}"\n`;
+            csv.push([p.datetime, `"${p.user}"`, p.dni, p.phone, p.method, p.amount, `"${p.ref}"`, p.status]);
         });
+    } else if (tableType === 'cashea') {
+        csv.push(["Orden", "FechaHora", "Cliente", "Cedula", "Telefono", "MontoTotal", "DescuentoPct", "InicialPct", "Abonado", "Estado", "Liquidacion"]);
+        casheaRecords.forEach(c => {
+            csv.push([c.orderId, c.datetime || '', `"${c.user}"`, c.dni, c.phone, c.totalAmount, c.discountPercent, c.downPaymentPercent, c.paidAmount, c.status, c.settlementStatus]);
+        });
+    }
 
-        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.setAttribute('href', url);
-        link.setAttribute('download', `PayTrack_Pagos_${new Date().toISOString().slice(0, 10)}.csv`);
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        showToast('Reporte exportado correctamente', 'success');
+    let csvContent = "data:text/csv;charset=utf-8," + csv.map(e => e.join(",")).join("\n");
+    let encodedUri = encodeURI(csvContent);
+    let link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showToast('Archivo Excel exportado con éxito', 'success');
+}
+
+const exportPaymentsExcelBtn = document.getElementById('export-payments-excel');
+if (exportPaymentsExcelBtn) {
+    exportPaymentsExcelBtn.addEventListener('click', () => exportTableToExcel('historial_pagos_paytrack.csv', 'payments'));
+}
+
+const exportCasheaExcelBtn = document.getElementById('export-cashea-excel');
+if (exportCasheaExcelBtn) {
+    exportCasheaExcelBtn.addEventListener('click', () => exportTableToExcel('mod_cashea_paytrack.csv', 'cashea'));
+}
+
+const verifyOrderBtn = document.getElementById('verify-order-btn');
+if (verifyOrderBtn) {
+    verifyOrderBtn.addEventListener('click', () => {
+        const orderIdVal = document.getElementById('verify-order-id').value.trim().toLowerCase();
+        const container = document.getElementById('verify-result-container');
+        if (!orderIdVal || !container) return;
+
+        const found = casheaRecords.find(c => c.orderId.toLowerCase() === orderIdVal);
+        container.classList.remove('hidden');
+
+        if (found) {
+            const finalPrice = found.totalAmount * (1 - (found.discountPercent / 100));
+            const commission7 = finalPrice * 0.07;
+            const netReceived = finalPrice - commission7;
+
+            container.innerHTML = `
+                <h5 style="color: var(--success); margin-bottom: 8px;">✓ Orden Encontrada</h5>
+                <p><strong>Cliente:</strong> ${found.user} (${found.dni})</p>
+                <p><strong>Monto Compra Neto:</strong> $${finalPrice.toFixed(2)}</p>
+                <p><strong>Comisión Cashea (7% Semanal):</strong> -$${commission7.toFixed(2)}</p>
+                <p><strong>Neto a Recibir:</strong> <strong style="color: var(--primary);">$${netReceived.toFixed(2)}</strong></p>
+                <p><strong>Estado:</strong> <span class="badge ${found.settlementStatus === 'Liquidado' ? 'status-pagado' : 'status-proceso'}">${found.settlementStatus}</span></p>
+            `;
+        } else {
+            container.innerHTML = `<h5 style="color: var(--danger);">✕ No se encontró la orden "${orderIdVal}"</h5>`;
+        }
     });
 }
 
-window.deletePayment = function(id) {
-    showConfirmModal('¿Deseas eliminar este registro de pago regular?', () => {
-        payments = payments.filter(p => p.id !== id);
-        localStorage.setItem('app_payments', JSON.stringify(payments));
-        showToast('Registro eliminado', 'success');
-        setupDashboard();
-    });
-};
+function renderConciliacionView() {
+    const tbody = document.getElementById('conciliacion-table-body');
+    if (!tbody) return;
+    tbody.innerHTML = '';
 
-// MÉTRICAS Y ANALÍTICAS COMPLETAS (INCLUYENDO CASHEA)
-function renderMetrics() {
-    const selectedDate = statsDatePicker ? statsDatePicker.value : '';
-    const counts = { 'Pago Móvil': 0, 'Punto de Venta': 0, 'Efectivo': 0, 'Cashea 💛': 0 };
-    const clientTxCounts = {};
-    const clientSpentTotals = {};
-
-    let totalRegularPaid = 0;
-    let casheaCollectedTotal = 0;
-    let casheaPendingTotal = 0;
-    let txCount = 0;
-
-    payments.forEach(p => {
-        if (!selectedDate || (p.datetime && p.datetime.startsWith(selectedDate))) {
-            if (counts[p.method] !== undefined) {
-                if (p.status === 'Pagado') {
-                    counts[p.method] += p.amount;
-                    totalRegularPaid += p.amount;
-                }
-                txCount++;
-                clientTxCounts[p.user] = (clientTxCounts[p.user] || 0) + 1;
-                clientSpentTotals[p.user] = (clientSpentTotals[p.user] || 0) + p.amount;
-            }
-        }
-    });
-
-    casheaRecords.forEach(c => {
-        const discAmount = c.totalAmount * ((c.discountPercent || 0) / 100.0);
-        const finalPrice = c.totalAmount - discAmount;
-        const remaining = finalPrice - c.paidAmount;
-
-        counts['Cashea 💛'] += c.paidAmount;
-        casheaCollectedTotal += c.paidAmount;
-        casheaPendingTotal += Math.max(0, remaining);
-        txCount++;
-
-        clientTxCounts[c.user] = (clientTxCounts[c.user] || 0) + 1;
-        clientSpentTotals[c.user] = (clientSpentTotals[c.user] || 0) + c.paidAmount;
-    });
-
-    const totalRealInHand = totalRegularPaid + casheaCollectedTotal;
-
-    let topFreqClientName = 'Ninguno';
-    let maxTx = 0;
-    for (const [client, numTx] of Object.entries(clientTxCounts)) {
-        if (numTx > maxTx) {
-            maxTx = numTx;
-            topFreqClientName = `${client} (${numTx} compras)`;
-        }
-    }
-
-    let topSpentClientName = 'Ninguno';
-    let maxSpent = 0;
-    for (const [client, spent] of Object.entries(clientSpentTotals)) {
-        if (spent > maxSpent) {
-            maxSpent = spent;
-            topSpentClientName = `${client} ($${spent.toFixed(2)})`;
-        }
-    }
-
-    if (kpiTotalAmount) kpiTotalAmount.textContent = `$${totalRealInHand.toFixed(2)}`;
-    if (kpiCasheaCollected) kpiCasheaCollected.textContent = `$${casheaCollectedTotal.toFixed(2)}`;
-    if (kpiCasheaPending) kpiCasheaPending.textContent = `$${casheaPendingTotal.toFixed(2)}`;
-    if (kpiTotalTx) kpiTotalTx.textContent = txCount;
-    if (kpiTopFreqClient) kpiTopFreqClient.textContent = topFreqClientName;
-    if (kpiTopSpentClient) kpiTopSpentClient.textContent = topSpentClientName;
-
-    if (svgDonut) {
-        const existingSegments = svgDonut.querySelectorAll('.donut-segment');
-        existingSegments.forEach(s => s.remove());
-    }
-    if (chartLegend) chartLegend.innerHTML = '';
-    if (barChartContainer) barChartContainer.innerHTML = '';
-
-    if (totalRealInHand === 0) {
-        if (chartLegend) chartLegend.innerHTML = '<p style="color:var(--charcoal-slate); font-style:italic;">No hay cobros o ingresos registrados para la fecha elegida.</p>';
+    if (casheaRecords.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;">No hay órdenes Cashea.</td></tr>`;
         return;
     }
 
-    let offset = 0;
-    Object.keys(counts).forEach(method => {
-        const amount = counts[method];
-        const percent = (amount / totalRealInHand) * 100;
+    casheaRecords.forEach(c => {
+        const finalPrice = c.totalAmount * (1 - (c.discountPercent / 100));
+        const commission7 = finalPrice * 0.07;
+        const netReceived = finalPrice - commission7;
 
-        if (percent > 0 && svgDonut) {
-            const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-            circle.setAttribute('class', 'donut-segment');
-            circle.setAttribute('cx', '21'); circle.setAttribute('cy', '21');
-            circle.setAttribute('r', '15.91549430918954');
-            circle.setAttribute('fill', 'transparent');
-            circle.setAttribute('stroke', methodColors[method]);
-            circle.setAttribute('stroke-width', '5');
-            circle.setAttribute('stroke-dasharray', `${percent} ${100 - percent}`);
-            circle.setAttribute('stroke-dashoffset', `${100 - offset}`);
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td><strong>#${c.orderId}</strong></td>
+            <td>${c.user}</td>
+            <td>$${finalPrice.toFixed(2)}</td>
+            <td style="color: var(--danger);">-$${commission7.toFixed(2)}</td>
+            <td><strong>$${netReceived.toFixed(2)}</strong></td>
+            <td><span class="badge ${c.settlementStatus === 'Liquidado' ? 'status-pagado' : 'status-proceso'}">${c.settlementStatus}</span></td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
 
-            svgDonut.appendChild(circle);
-            offset += percent;
-        }
+function setupDashboard() {
+    renderTable();
+    renderCasheaTable();
+    renderConciliacionView();
+    renderMetrics();
+}
 
-        if (chartLegend) {
-            const item = document.createElement('div');
-            item.className = 'legend-item';
-            item.innerHTML = `
-                <span class="legend-color" style="background-color: ${methodColors[method]}"></span>
-                <strong>${method}:</strong> $${amount.toFixed(2)} (${percent.toFixed(1)}%)
-            `;
-            chartLegend.appendChild(item);
-        }
-
-        if (barChartContainer) {
-            const barItem = document.createElement('div');
-            barItem.className = 'bar-item';
-            barItem.innerHTML = `
-                <div class="bar-info">
-                    <span>${method}</span>
-                    <span>$${amount.toFixed(2)}</span>
+function renderTable() {
+    const paymentTableBody = document.getElementById('payment-table-body');
+    if (!paymentTableBody) return;
+    paymentTableBody.innerHTML = '';
+    
+    payments.forEach(p => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td class="date-cell">${p.datetime || 'N/A'}</td>
+            <td><strong>${p.user}</strong></td>
+            <td>${p.dni || 'N/A'}</td>
+            <td>${p.phone || 'N/A'}</td>
+            <td>${p.image ? `<img src="${p.image}" class="thumb-img" onclick="openImageViewer('${p.image}')">` : '<span class="no-img-text">Sin foto</span>'}</td>
+            <td><span class="badge">${p.method}</span></td>
+            <td><strong>$${Number(p.amount).toFixed(2)}</strong></td>
+            <td>${p.ref}</td>
+            <td><span class="badge status-${p.status === 'Pagado' ? 'pagado' : 'proceso'}">${p.status}</span></td>
+            <td>
+                <div class="action-buttons-group">
+                    <button class="btn-icon-action" title="Editar Pago" onclick="openEditPayment(${p.id})">✏️</button>
+                    <button class="btn-icon-action btn-icon-delete" title="Eliminar" onclick="deletePayment(${p.id})">🗑️</button>
                 </div>
-                <div class="bar-track">
-                    <div class="bar-fill" style="width: ${percent}%; background-color: ${methodColors[method]}"></div>
+            </td>
+        `;
+        paymentTableBody.appendChild(tr);
+    });
+}
+
+function renderCasheaTable() {
+    const casheaTableBody = document.getElementById('cashea-table-body');
+    if (!casheaTableBody) return;
+    casheaTableBody.innerHTML = '';
+
+    casheaRecords.forEach(c => {
+        const finalPrice = c.totalAmount * (1 - (c.discountPercent / 100));
+        const clientInitialAmount = finalPrice * (c.downPaymentPercent / 100);
+        const remaining = finalPrice - c.paidAmount;
+        const installmentAmount = c.totalInstallments > 0 ? remaining / c.totalInstallments : 0;
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td><strong>#${c.orderId}</strong></td>
+            <td>${c.user}</td>
+            <td>${c.dni}<br><small>${c.phone}</small></td>
+            <td>$${c.totalAmount.toFixed(2)}</td>
+            <td>$${clientInitialAmount.toFixed(2)} (${c.downPaymentPercent}%)</td>
+            <td><strong>$${installmentAmount.toFixed(2)}</strong> <small>(${c.totalInstallments} cuotas)</small></td>
+            <td style="color: ${remaining > 0 ? 'var(--status-no-registrado)' : 'var(--status-pagado)'};"><strong>$${remaining.toFixed(2)}</strong></td>
+            <td>${c.paidInstallments} / ${c.totalInstallments}</td>
+            <td class="date-cell">${c.nextDate}</td>
+            <td><span class="badge ${c.settlementStatus === 'Liquidado' ? 'status-pagado' : 'status-proceso'}">${c.settlementStatus}</span></td>
+            <td>
+                <div class="action-buttons-group">
+                    ${remaining > 0 ? `<button class="btn-icon-action btn-cashea-yellow" title="Abonar Cuota" onclick="openAbonoModal(${c.id})">💳</button>` : ''}
+                    <button class="btn-icon-action btn-icon-delete" title="Eliminar" onclick="deleteCashea(${c.id})">🗑️</button>
                 </div>
-            `;
-            barChartContainer.appendChild(barItem);
+            </td>
+        `;
+        casheaTableBody.appendChild(tr);
+    });
+}
+
+function renderMetrics() {
+    const totalAmountElem = document.getElementById('kpi-total-amount');
+    const casheaCommissionElem = document.getElementById('kpi-cashea-commission');
+    const casheaInitCommissionElem = document.getElementById('kpi-cashea-init-commission');
+    const casheaTransitElem = document.getElementById('kpi-cashea-transit');
+    const casheaCollectedElem = document.getElementById('kpi-cashea-collected');
+    const totalTxElem = document.getElementById('kpi-total-tx');
+
+    let totalCaja = 0;
+    let totalCasheaCommission7 = 0;
+    let totalCasheaCommissionInit4 = 0;
+
+    payments.forEach(p => {
+        if (p.status === 'Pagado') totalCaja += p.amount;
+    });
+
+    let transitTotal = 0;
+    let collectedCashea = 0;
+
+    casheaRecords.forEach(c => {
+        const finalPrice = c.totalAmount * (1 - (c.discountPercent / 100));
+        const remaining = finalPrice - c.paidAmount;
+
+        collectedCashea += c.paidAmount;
+        totalCasheaCommission7 += finalPrice * 0.07;
+
+        const clientInitialAmt = finalPrice * (c.downPaymentPercent / 100);
+        totalCasheaCommissionInit4 += clientInitialAmt * 0.04;
+
+        if (c.settlementStatus === 'En Tránsito') {
+            transitTotal += remaining;
         }
+    });
+
+    if (totalAmountElem) totalAmountElem.textContent = `$${totalCaja.toFixed(2)}`;
+    if (casheaCommissionElem) casheaCommissionElem.textContent = `$${totalCasheaCommission7.toFixed(2)}`;
+    if (casheaInitCommissionElem) casheaInitCommissionElem.textContent = `$${totalCasheaCommissionInit4.toFixed(2)}`;
+    if (casheaTransitElem) casheaTransitElem.textContent = `$${transitTotal.toFixed(2)}`;
+    if (casheaCollectedElem) casheaCollectedElem.textContent = `$${collectedCashea.toFixed(2)}`;
+    if (totalTxElem) totalTxElem.textContent = payments.length + casheaRecords.length;
+
+    renderCharts();
+}
+
+function renderCharts() {
+    const ctxMethods = document.getElementById('paymentMethodsChart');
+    if (ctxMethods) {
+        if (chartsInstance.methods) chartsInstance.methods.destroy();
+
+        let pmCount = payments.filter(p => p.method.includes('Pago Móvil')).length;
+        let pvCount = payments.filter(p => p.method.includes('Punto')).length;
+        let efCount = payments.filter(p => p.method.includes('Efectivo')).length;
+        let csCount = payments.filter(p => p.method.includes('Cashea')).length;
+
+        chartsInstance.methods = new Chart(ctxMethods, {
+            type: 'pie',
+            data: {
+                labels: ['Pago Móvil', 'Punto de Venta', 'Efectivo', 'Cashea'],
+                datasets: [{
+                    data: [pmCount, pvCount, efCount, csCount],
+                    backgroundColor: ['#6366f1', '#3b82f6', '#10b981', '#f59e0b']
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { position: 'bottom', labels: { color: document.documentElement.getAttribute('data-theme') === 'light' ? '#111' : '#fff' } } }
+            }
+        });
+    }
+
+    const ctxCashea = document.getElementById('casheaStatusChart');
+    if (ctxCashea) {
+        if (chartsInstance.cashea) chartsInstance.cashea.destroy();
+
+        let inTransit = casheaRecords.filter(c => c.settlementStatus === 'En Tránsito').length;
+        let liquidated = casheaRecords.filter(c => c.settlementStatus === 'Liquidado').length;
+
+        chartsInstance.cashea = new Chart(ctxCashea, {
+            type: 'doughnut',
+            data: {
+                labels: ['En Tránsito', 'Liquidado'],
+                datasets: [{
+                    data: [inTransit, liquidated],
+                    backgroundColor: ['#f59e0b', '#10b981']
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { position: 'bottom', labels: { color: document.documentElement.getAttribute('data-theme') === 'light' ? '#111' : '#fff' } } }
+            }
+        });
+    }
+}
+
+window.openImageViewer = function(imgSrc) {
+    const viewer = document.getElementById('image-viewer-modal');
+    const fullImg = document.getElementById('viewer-full-image');
+    if (viewer && fullImg) {
+        fullImg.src = imgSrc;
+        viewer.classList.remove('hidden');
+    }
+};
+
+window.openEditPayment = function(id) {
+    const p = payments.find(item => item.id == id);
+    if (!p) return;
+
+    document.getElementById('payment-modal-title').textContent = 'Editar Pago';
+    document.getElementById('edit-payment-id').value = p.id;
+    document.getElementById('modal-client-dni').value = p.dni || '';
+    document.getElementById('modal-client-input').value = p.user || '';
+    document.getElementById('modal-client-phone').value = p.phone || '';
+
+    const row = document.querySelector('.payment-row');
+    row.querySelector('.pay-method').value = p.method.includes('Cashea') ? 'Pago Móvil' : p.method;
+    row.querySelector('.pay-status').value = p.status;
+    row.querySelector('.pay-amount').value = p.amount;
+    row.querySelector('.pay-ref').value = p.ref;
+
+    paymentModal.classList.remove('hidden');
+};
+
+window.deletePayment = function(id) {
+    showConfirmModal('¿Estás seguro de eliminar este pago?', () => {
+        payments = payments.filter(p => p.id !== id);
+        localStorage.setItem('paytrack_payments', JSON.stringify(payments));
+        renderTable();
+        showToast('Pago eliminado', 'success');
+    });
+};
+
+window.deleteCashea = function(id) {
+    showConfirmModal('¿Estás seguro de eliminar este registro de Cashea?', () => {
+        casheaRecords = casheaRecords.filter(c => c.id !== id);
+        localStorage.setItem('paytrack_cashea_records', JSON.stringify(casheaRecords));
+        renderCasheaTable();
+        showToast('Registro Cashea eliminado', 'success');
+    });
+};
+
+window.openAbonoModal = function(id) {
+    const record = casheaRecords.find(c => c.id === id);
+    if (!record) return;
+    document.getElementById('abono-cashea-id').value = record.id;
+    document.getElementById('abono-client-name').value = `${record.user} (Orden #${record.orderId})`;
+    casheaAbonoModal.classList.remove('hidden');
+};
+
+function renderUnpaidList() {
+    const tbody = document.getElementById('unpaid-table-body');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+
+    const unpaid = casheaRecords.filter(c => c.status !== 'Pagado');
+    if (unpaid.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;">No hay deudores pendientes 🎉</td></tr>`;
+        return;
+    }
+
+    unpaid.forEach(c => {
+        const finalPrice = c.totalAmount * (1 - (c.discountPercent / 100));
+        const remaining = finalPrice - c.paidAmount;
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td><strong>${c.user}</strong></td>
+            <td>${c.dni} <br><small>${c.phone}</small></td>
+            <td style="color: var(--status-no-registrado);"><strong>$${remaining.toFixed(2)}</strong></td>
+            <td class="date-cell">${c.nextDate}</td>
+            <td><span class="badge status-proceso">${c.status}</span></td>
+        `;
+        tbody.appendChild(tr);
     });
 }
